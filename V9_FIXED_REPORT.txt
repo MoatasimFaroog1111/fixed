@@ -1,0 +1,10 @@
+V9 fixed build
+
+Fixed:
+- Restored TradingStrategy.evaluate()
+- Verified class has evaluate() method.
+- Added advanced_execution.py
+- Added Regime Detection, Dynamic Thresholds, Dynamic Position Sizing, MTF proxy.
+- Safe short logic remains disabled by default for naked shorts.
+
+Generated: 2026-05-14T11:33:32.064077

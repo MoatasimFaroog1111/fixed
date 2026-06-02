@@ -1,0 +1,11 @@
+{
+  "trades": {},
+  "daily": {
+    "2026-05-31": {
+      "trades": 1,
+      "pnl": 11.16
+    }
+  },
+  "total_pnl": 11.16,
+  "version": 2
+}

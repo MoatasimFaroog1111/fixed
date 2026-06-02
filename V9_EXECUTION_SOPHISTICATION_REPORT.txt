@@ -1,0 +1,32 @@
+BullionVault Bot v9 — Execution Sophistication
+
+Implemented:
+1. AdvancedExecutionEngine in advanced_execution.py
+2. Regime detection:
+   - TRENDING
+   - SIDEWAYS
+   - VOLATILE
+   - QUIET
+3. Multi-timeframe proxy confirmation from rolling price history.
+4. Dynamic thresholds:
+   - Adjusted by ATR, regime, and market session.
+5. Dynamic position sizing:
+   - Adjusts risk percentage by confidence, ATR, and regime.
+6. Safe short-selling logic:
+   - SELL signals are recognized.
+   - Existing long positions can be sold.
+   - Naked short execution is disabled by default for safety.
+7. Strategy now uses weighted confidence from:
+   - ML
+   - EMA
+   - Momentum
+   - Volume / order book imbalance
+   - News
+   - RSI
+   - Session
+
+Safety note:
+True naked short selling should only be enabled if your broker/API explicitly supports it.
+BullionVault-style vault trading usually sells owned metal; therefore the default behavior avoids opening naked shorts.
+
+Generated: 2026-05-14T11:23:02.646436

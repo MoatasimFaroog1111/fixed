@@ -1,0 +1,228 @@
+import json
+import time
+import requests
+from pathlib import Path
+
+BASE_DIR = Path("/home/moatasim/fixed")
+ENV_FILE = BASE_DIR / ".env"
+CONTROL_FILE = BASE_DIR / "control_state.json"
+
+
+def load_env():
+    env = {}
+
+    if not ENV_FILE.exists():
+        raise FileNotFoundError(f"Missing env file: {ENV_FILE}")
+
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            continue
+
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+
+    return env
+
+
+def load_state():
+    default = {
+        "paused": False,
+        "allow_buy": True,
+        "allow_sell": True,
+        "silver_enabled": True,
+        "palladium_enabled": True,
+        "stop_loss_enabled": True,
+    }
+
+    if CONTROL_FILE.exists():
+        try:
+            current = json.loads(
+                CONTROL_FILE.read_text(encoding="utf-8")
+            )
+            default.update(current)
+        except Exception:
+            pass
+
+    return default
+
+
+def save_state(state: dict):
+    CONTROL_FILE.write_text(
+        json.dumps(state, indent=2),
+        encoding="utf-8"
+    )
+
+
+def send_message(token: str, chat_id: str, text: str):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+
+    requests.post(url, json=payload, timeout=20)
+
+
+
+def get_updates(token: str, offset=None):
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+
+    params = {
+        "timeout": 30,
+    }
+
+    if offset is not None:
+        params["offset"] = offset
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=40
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+
+def handle_command(text: str, state: dict):
+    text = text.strip().lower()
+
+    if text == "/pause":
+        state["paused"] = True
+        return "⏸️ Bot paused"
+
+    if text == "/resume":
+        state["paused"] = False
+        return "▶️ Bot resumed"
+
+    if text == "/no_buy":
+        state["allow_buy"] = False
+        return "🛑 BUY disabled"
+
+    if text == "/allow_buy":
+        state["allow_buy"] = True
+        return "✅ BUY enabled"
+
+    if text == "/no_sell":
+        state["allow_sell"] = False
+        return "🛑 SELL disabled"
+
+    if text == "/allow_sell":
+        state["allow_sell"] = True
+        return "✅ SELL enabled"
+
+    if text == "/no_silver":
+        state["silver_enabled"] = False
+        return "🛑 Silver disabled"
+
+    if text == "/allow_silver":
+        state["silver_enabled"] = True
+        return "✅ Silver enabled"
+
+    if text == "/no_palladium":
+        state["palladium_enabled"] = False
+        return "🛑 Palladium disabled"
+
+    if text == "/allow_palladium":
+        state["palladium_enabled"] = True
+        return "✅ Palladium enabled"
+
+    if text == "/status":
+        return "📊 STATUS\n" + json.dumps(state, indent=2)
+
+    if text == "/help":
+        return (
+            "🤖 Guardian Commands:\n"
+            "/status\n"
+            "/pause\n"
+            "/resume\n"
+            "/no_buy\n"
+            "/allow_buy\n"
+            "/no_sell\n"
+            "/allow_sell\n"
+            "/no_silver\n"
+            "/allow_silver\n"
+            "/no_palladium\n"
+            "/allow_palladium"
+        )
+
+    return None
+
+
+
+def main():
+    env = load_env()
+
+    token = env.get("TG_TOKEN_SILVER")
+
+    if not token:
+        token = env.get("TG_TOKEN_PALLADIUM")
+
+    chat_id = str(env.get("TG_CHAT_ID", "")).strip()
+
+    if not token:
+        raise RuntimeError("Missing Telegram token in .env")
+
+    if not chat_id:
+        raise RuntimeError("Missing TG_CHAT_ID in .env")
+
+    send_message(
+        token,
+        chat_id,
+        "✅ Guardian Telegram Command Center started"
+    )
+
+    offset = None
+
+    while True:
+        try:
+            updates = get_updates(token, offset)
+
+            for item in updates.get("result", []):
+                offset = item["update_id"] + 1
+
+                message = item.get("message") or {}
+
+                incoming_chat = str(
+                    (message.get("chat") or {}).get("id", "")
+                )
+
+                if incoming_chat != chat_id:
+                    continue
+
+                text = message.get("text") or ""
+
+                state = load_state()
+
+                response = handle_command(text, state)
+
+                if response is not None:
+                    save_state(state)
+                    send_message(token, chat_id, response)
+
+        except Exception as exc:
+            try:
+                send_message(
+                    token,
+                    chat_id,
+                    f"⚠️ Command Center error: {exc}"
+                )
+            except Exception:
+                pass
+
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

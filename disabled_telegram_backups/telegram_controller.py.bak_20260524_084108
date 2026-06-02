@@ -1,0 +1,206 @@
+"""
+Telegram Controller — نظام التحكم الكامل عبر تيليغرام
+الأوامر: /status /stop /pause /resume /report /positions /setloss /help
+"""
+import threading
+import time
+import logging
+import requests
+from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger(__name__)
+RIYADH = timezone(timedelta(hours=3))
+
+
+class TelegramController:
+    POLL_TIMEOUT = 30
+
+    def __init__(self, token: str, chat_id: str, bot_ref):
+        self.token      = token
+        self.chat_id    = str(chat_id)
+        self.bot        = bot_ref
+        self._offset    = 0
+        self._paused_until = None
+        self._thread    = None
+        self._running   = False
+
+    def start(self):
+        if not self.token or not self.chat_id:
+            logger.info("TelegramController: لا يوجد token/chat_id — معطّل")
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="TGController")
+        self._thread.start()
+        logger.info("TelegramController: بدأ الاستماع للأوامر ✅")
+
+    def stop(self):
+        self._running = False
+
+    @property
+    def is_paused(self) -> bool:
+        if self._paused_until is None:
+            return False
+        if datetime.now(timezone.utc) < self._paused_until:
+            return True
+        self._paused_until = None
+        return False
+
+    def send(self, text: str):
+        if not self.token or not self.chat_id:
+            return
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                data={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                logger.warning(f"TG send {r.status_code}: {r.text[:100]}")
+        except Exception as e:
+            logger.error(f"TG send error: {e}")
+
+    def _get_updates(self):
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{self.token}/getUpdates",
+                params={"offset": self._offset, "timeout": self.POLL_TIMEOUT},
+                timeout=self.POLL_TIMEOUT + 5,
+            )
+            if r.status_code == 200:
+                return r.json().get("result", [])
+        except Exception as e:
+            logger.warning(f"TG getUpdates: {e}")
+        return []
+
+    def _poll_loop(self):
+        while self._running:
+            try:
+                updates = self._get_updates()
+                for upd in updates:
+                    self._offset = upd["update_id"] + 1
+                    msg     = upd.get("message", {})
+                    text    = msg.get("text", "").strip()
+                    from_id = str(msg.get("chat", {}).get("id", ""))
+                    if from_id != self.chat_id:
+                        continue
+                    self._handle(text)
+            except Exception as e:
+                logger.error(f"TG poll loop error: {e}")
+                time.sleep(5)
+
+    def _handle(self, text: str):
+        if not text:
+            return
+        parts = text.split()
+        cmd   = parts[0].lower()
+
+        if cmd == "/status":
+            self.send(self._status_msg())
+        elif cmd == "/stop":
+            self.send(f"⛔ <b>{self.bot.BOT_NAME}</b>\nإيقاف البوت الآن...")
+            self.bot.running = False
+        elif cmd == "/pause":
+            try:
+                hours = float(parts[1]) if len(parts) > 1 else 1.0
+            except ValueError:
+                hours = 1.0
+            self._paused_until = datetime.now(timezone.utc) + timedelta(hours=hours)
+            self.send(f"⏸ <b>{self.bot.BOT_NAME}</b>\nمتوقف مؤقتاً لـ {hours:.0f} ساعة")
+        elif cmd == "/resume":
+            self._paused_until = None
+            self.send(f"▶️ <b>{self.bot.BOT_NAME}</b>\nاستؤنف العمل")
+        elif cmd == "/report":
+            self.send(self._daily_report_msg())
+        elif cmd == "/positions":
+            self.send(self._positions_msg())
+        elif cmd == "/setloss":
+            try:
+                val = float(parts[1])
+                self.bot.risk.config.max_daily_loss_usd = val
+                self.send(f"✅ حد الخسارة اليومية = <b>${val:.0f}</b>")
+            except Exception:
+                self.send("❌ الاستخدام الصحيح: /setloss 100")
+        elif cmd == "/help":
+            self.send(self._help_msg())
+        else:
+            self.send(f"❓ أمر غير معروف: {cmd}\nأرسل /help للقائمة")
+
+    def _status_msg(self) -> str:
+        bot   = self.bot
+        stats = bot.risk.get_stats()
+        now_r = datetime.now(RIYADH).strftime("%H:%M — %Y/%m/%d")
+        usd = 0.0
+        try:
+            bal = bot._fetch_balance()
+            usd = float(bal.get("USD", {}).get("available", 0))
+        except Exception:
+            pass
+        paused_txt = "⏸ متوقف مؤقتاً" if self.is_paused else "🟢 يعمل"
+        pnl_icon   = "📈" if stats["daily_pnl"] >= 0 else "📉"
+        total_pnl  = 0.0
+        if hasattr(bot, "state_mgr") and bot.state_mgr:
+            total_pnl = bot.state_mgr.data.get("total_pnl", 0.0)
+        lines = [
+            f"<b>{bot.BOT_NAME}</b> | {paused_txt}",
+            f"⏰ {now_r} (الرياض)",
+            f"",
+            f"💵 رصيد USD: <b>${usd:,.2f}</b>",
+            f"📊 صفقات اليوم: {stats['trades_today']}",
+            f"{pnl_icon} PnL اليوم: <b>${stats['daily_pnl']:+.2f}</b>",
+            f"🏦 PnL تراكمي: <b>${total_pnl:+.2f}</b>",
+            f"📂 مراكز مفتوحة: {stats['open_positions']}",
+        ]
+        return "\n".join(lines)
+
+    def _positions_msg(self) -> str:
+        trades = self.bot.risk.open_trades
+        if not trades:
+            return "📂 لا توجد مراكز مفتوحة الآن"
+        lines = [f"<b>المراكز المفتوحة ({len(trades)}):</b>", ""]
+        for oid, t in trades.items():
+            icon    = "🟢" if t.pnl >= 0 else "🔴"
+            chg_pct = (t.pnl / (t.entry_price * t.quantity) * 100) if t.entry_price and t.quantity else 0
+            lines.append(
+                f"{icon} <b>{t.security_id}</b> | {t.quantity}kg\n"
+                f"   دخول: {t.entry_price:,.0f}  TP: {t.take_profit:,.0f}\n"
+                f"   PnL: <b>${t.pnl:+.2f}</b> ({chg_pct:+.2f}%)"
+            )
+        return "\n".join(lines)
+
+    def _daily_report_msg(self) -> str:
+        stats  = self.bot.risk.get_stats()
+        today  = datetime.now(RIYADH).strftime("%Y-%m-%d")
+        total  = 0.0
+        days   = 0
+        if hasattr(self.bot, "state_mgr") and self.bot.state_mgr:
+            sm    = self.bot.state_mgr
+            total = sm.data.get("total_pnl", 0.0)
+            days  = len(sm.data.get("daily", {}))
+        icon = "✅" if stats["daily_pnl"] >= 0 else "❌"
+        lines = [
+            f"<b>📋 تقرير يومي — {today}</b>",
+            f"",
+            f"{icon} PnL اليوم: <b>${stats['daily_pnl']:+.2f}</b>",
+            f"📊 صفقات منفذة: {stats['trades_today']}",
+            f"📂 مراكز مفتوحة: {stats['open_positions']}",
+            f"",
+            f"🏦 إجمالي تراكمي: <b>${total:+.2f}</b>",
+            f"📅 أيام تداول مسجلة: {days}",
+        ]
+        return "\n".join(lines)
+
+    def _help_msg(self) -> str:
+        return (
+            "<b>📋 الأوامر المتاحة:</b>\n\n"
+            "/status — حالة البوت لحظياً\n"
+            "/positions — المراكز المفتوحة + PnL\n"
+            "/report — تقرير اليوم الكامل\n"
+            "/pause 2 — توقف مؤقت N ساعة\n"
+            "/resume — استئناف بعد التوقف\n"
+            "/setloss 100 — تغيير حد الخسارة اليومية\n"
+            "/stop — إيقاف البوت نهائياً\n"
+            "/help — هذه القائمة\n/history — آخر الصفقات المسجلة"
+        )
+
+    def send_daily_report(self):
+        self.send(self._daily_report_msg())

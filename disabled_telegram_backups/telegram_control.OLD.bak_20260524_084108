@@ -1,0 +1,624 @@
+import json
+import time
+import os
+import re
+import requests
+from pathlib import Path
+
+from api_client import BullionVaultAPI
+
+BASE_DIR = Path("/home/moatasim/fixed")
+ENV_FILE = BASE_DIR / ".env"
+CONTROL_FILE = BASE_DIR / "control_state.json"
+PENDING_FILE = BASE_DIR / "pending_order.json"
+
+SYMBOLS = {
+    "silver": {
+        "security_id": "AGXLN",
+        "currency": "USD",
+        "name": "Silver",
+        "icon": "🥈",
+        "log": BASE_DIR / "bot_silver.log",
+        "max_qty": 1.0,
+    },
+    "palladium": {
+        "security_id": "PDXLN",
+        "currency": "USD",
+        "name": "Palladium",
+        "icon": "🪙",
+        "log": BASE_DIR / "bot_palladium.log",
+        "max_qty": 0.1,
+    },
+}
+
+STOP_LOSS_PCT = 0.018
+TAKE_PROFIT_PCT = 0.014
+
+
+def load_env():
+    env = {}
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env
+
+
+def load_state():
+    default = {
+        "paused": False,
+        "allow_buy": True,
+        "allow_sell": True,
+        "silver_enabled": True,
+        "palladium_enabled": True,
+        "stop_loss_enabled": True,
+        "emergency_close_all": False,
+        "paused_after_close_all": True,
+    }
+    if CONTROL_FILE.exists():
+        try:
+            default.update(json.loads(CONTROL_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return default
+
+
+def save_state(state):
+    CONTROL_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def send(token, chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={"chat_id": chat_id, "text": text},
+        timeout=20,
+    )
+
+
+def get_updates(token, offset=None):
+    params = {"timeout": 30}
+    if offset is not None:
+        params["offset"] = offset
+    r = requests.get(
+        f"https://api.telegram.org/bot{token}/getUpdates",
+        params=params,
+        timeout=40,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def latest_price_from_log(symbol_key):
+    log_file = SYMBOLS[symbol_key]["log"]
+    if not log_file.exists():
+        return None
+
+    lines = log_file.read_text(
+        encoding="utf-8",
+        errors="ignore"
+    ).splitlines()[-500:]
+
+    price_re = re.compile(
+        r"PRICE \| bid=([0-9.]+) ask=([0-9.]+) mid=([0-9.]+)"
+    )
+
+    for line in reversed(lines):
+        m = price_re.search(line)
+        if m:
+            bid = float(m.group(1))
+            ask = float(m.group(2))
+            mid = float(m.group(3))
+            return {"bid": bid, "ask": ask, "mid": mid}
+
+    return None
+
+
+def estimate_preview(action, symbol_key, qty, limit_price):
+    symbol = SYMBOLS[symbol_key]
+    market = latest_price_from_log(symbol_key)
+
+    total = qty * limit_price
+
+    if action == "B":
+        sl = limit_price * (1 - STOP_LOSS_PCT)
+        tp = limit_price * (1 + TAKE_PROFIT_PCT)
+        loss_usd = qty * (limit_price - sl)
+        profit_usd = qty * (tp - limit_price)
+    else:
+        sl = limit_price * (1 + STOP_LOSS_PCT)
+        tp = limit_price * (1 - TAKE_PROFIT_PCT)
+        loss_usd = qty * (sl - limit_price)
+        profit_usd = qty * (limit_price - tp)
+
+    spread_text = "Spread: غير متاح من آخر لوق"
+    warning = "⚠️ لا يوجد سعر سوق حديث كافٍ للحكم على السبريد."
+
+    if market:
+        bid = market["bid"]
+        ask = market["ask"]
+        mid = market["mid"]
+        spread = ask - bid
+        spread_pct = (spread / bid) if bid else 0
+
+        spread_text = (
+            f"Bid: {bid:,.2f}\n"
+            f"Ask: {ask:,.2f}\n"
+            f"Mid: {mid:,.2f}\n"
+            f"Spread: {spread:,.2f} ({spread_pct:.2%})"
+        )
+
+        if spread_pct <= 0.006:
+            warning = "✅ السبريد ممتاز/مقبول."
+        elif spread_pct <= 0.015:
+            warning = "⚠️ السبريد متوسط، انتبه."
+        else:
+            warning = "🚨 السبريد عالي جدًا، الصفقة خطرة."
+
+    side_text = "شراء" if action == "B" else "بيع"
+
+    return (
+        f"📋 Order Preview\n\n"
+        f"{symbol['icon']} {side_text} {symbol['name']}\n"
+        f"Security: {symbol['security_id']}/{symbol['currency']}\n"
+        f"Qty: {qty:.3f} kg\n"
+        f"Limit Price: {limit_price:,.2f}\n"
+        f"Estimated Value: ${total:,.2f}\n\n"
+        f"📈 Market Snapshot\n"
+        f"{spread_text}\n\n"
+        f"🛡️ Risk Estimate\n"
+        f"Stop Loss @ {STOP_LOSS_PCT:.1%}: {sl:,.2f}\n"
+        f"Expected Loss: -${loss_usd:,.2f}\n"
+        f"Take Profit @ {TAKE_PROFIT_PCT:.1%}: {tp:,.2f}\n"
+        f"Expected Profit: +${profit_usd:,.2f}\n\n"
+        f"{warning}\n\n"
+        f"للتنفيذ أرسل:\n"
+        f"/confirm_order\n\n"
+        f"للإلغاء أرسل:\n"
+        f"/cancel_order"
+    )
+
+
+def save_pending(order):
+    PENDING_FILE.write_text(json.dumps(order, indent=2), encoding="utf-8")
+
+
+def load_pending():
+    if not PENDING_FILE.exists():
+        return None
+    try:
+        return json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def clear_pending():
+    if PENDING_FILE.exists():
+        PENDING_FILE.unlink()
+
+
+def parse_manual_order(text):
+    parts = text.split()
+
+    if len(parts) != 3:
+        return None, "الصيغة الصحيحة: /buy_silver 0.005 2420"
+
+    cmd, qty_s, price_s = parts
+
+    mapping = {
+        "/buy_silver": ("B", "silver"),
+        "/sell_silver": ("S", "silver"),
+        "/buy_palladium": ("B", "palladium"),
+        "/sell_palladium": ("S", "palladium"),
+    }
+
+    if cmd not in mapping:
+        return None, "أمر غير معروف."
+
+    try:
+        qty = float(qty_s)
+        price = float(price_s)
+    except ValueError:
+        return None, "الكمية والسعر يجب أن يكونا أرقامًا."
+
+    if qty <= 0 or price <= 0:
+        return None, "الكمية والسعر يجب أن يكونا أكبر من صفر."
+
+    action, symbol_key = mapping[cmd]
+    symbol = SYMBOLS[symbol_key]
+
+    if qty > symbol["max_qty"]:
+        return None, f"الكمية أكبر من الحد الآمن: {symbol['max_qty']}kg"
+
+    order = {
+        "action": action,
+        "symbol_key": symbol_key,
+        "security_id": symbol["security_id"],
+        "currency": symbol["currency"],
+        "qty": round(qty, 3),
+        "limit_price": int(round(price)),
+        "created_at": int(time.time()),
+    }
+
+    return order, None
+
+
+def execute_pending_order():
+    env = load_env()
+    order = load_pending()
+
+    if not order:
+        return "لا يوجد أمر معلّق."
+
+    username = env.get("BV_USERNAME")
+    password = env.get("BV_PASSWORD")
+
+    if not username or not password:
+        return "❌ بيانات BullionVault غير موجودة في .env"
+
+    api = BullionVaultAPI(username, password)
+
+    resp = api.place_order(
+        action=order["action"],
+        security_id=order["security_id"],
+        currency=order["currency"],
+        quantity=order["qty"],
+        limit=order["limit_price"],
+        type_code="TIL_CANCEL",
+        client_ref=f"MANUAL{int(time.time())}",
+    )
+
+    clear_pending()
+
+    if resp is None:
+        return "❌ فشل تنفيذ الأمر. لم يصل رد صحيح من BullionVault."
+
+    return (
+        "✅ Manual order sent to BullionVault\n"
+        f"Action: {order['action']}\n"
+        f"Security: {order['security_id']}/{order['currency']}\n"
+        f"Qty: {order['qty']}kg\n"
+        f"Limit: {order['limit_price']}"
+    )
+
+
+def positions_report():
+    report = "📦 OPEN POSITIONS\n\n"
+    found = False
+
+    for key, symbol in SYMBOLS.items():
+        log_file = symbol["log"]
+        if not log_file.exists():
+            continue
+
+        lines = log_file.read_text(
+            encoding="utf-8",
+            errors="ignore"
+        ).splitlines()[-300:]
+
+        latest = None
+        for line in reversed(lines):
+            if "مركز |" in line:
+                latest = line
+                break
+
+        if latest:
+            found = True
+            report += f"{symbol['icon']} {symbol['name']}\n{latest}\n\n"
+
+    if not found:
+        report += "No open positions"
+
+    return report
+
+
+def main():
+    env = load_env()
+    token = env.get("TG_TOKEN_SILVER") or env.get("TG_TOKEN_PALLADIUM")
+    chat_id = str(env.get("TG_CHAT_ID", "")).strip()
+
+    if not token or not chat_id:
+        raise SystemExit("Missing Telegram token or chat id")
+
+    send(token, chat_id, "✅ Guardian Telegram Command Center started")
+
+    offset = None
+
+    while True:
+        try:
+            data = get_updates(token, offset)
+
+            for item in data.get("result", []):
+                offset = item["update_id"] + 1
+                msg = item.get("message") or {}
+                incoming_chat = str((msg.get("chat") or {}).get("id", ""))
+
+                if incoming_chat != chat_id:
+                    continue
+
+                text = (msg.get("text") or "").strip().lower()
+                state = load_state()
+
+                if text == "/status":
+                    send(token, chat_id, "📊 STATUS\n" + json.dumps(state, indent=2))
+
+                elif text == "/positions":
+                    send(token, chat_id, positions_report())
+
+                elif text == "/pause":
+                    state["paused"] = True
+                    save_state(state)
+                    send(token, chat_id, "⏸️ Bot paused")
+
+                elif text == "/resume":
+                    state["paused"] = False
+                    save_state(state)
+                    send(token, chat_id, "▶️ Bot resumed")
+
+                elif text == "/no_buy":
+                    state["allow_buy"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 BUY disabled")
+
+                elif text == "/allow_buy":
+                    state["allow_buy"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ BUY enabled")
+
+                elif text == "/no_sell":
+                    state["allow_sell"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 SELL disabled")
+
+                elif text == "/allow_sell":
+                    state["allow_sell"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ SELL enabled")
+
+                elif text == "/no_silver":
+                    state["silver_enabled"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 Silver disabled")
+
+                elif text == "/allow_silver":
+                    state["silver_enabled"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ Silver enabled")
+
+                elif text == "/no_palladium":
+                    state["palladium_enabled"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 Palladium disabled")
+
+                elif text == "/allow_palladium":
+                    state["palladium_enabled"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ Palladium enabled")
+
+                elif text == "/close_all":
+                    state["emergency_close_all"] = True
+                    state["allow_buy"] = False
+                    state["paused"] = False
+                    save_state(state)
+                    send(
+                        token,
+                        chat_id,
+                        "🚨 CLOSE ALL activated\nBuying disabled.\nBot will attempt to close all positions.",
+                    )
+
+
+                
+                elif text == "/history":
+                    try:
+                        import json
+
+                        path = "trade_history.jsonl"
+
+                        lines = []
+
+                        try:
+                            with open(path, "r", encoding="utf-8") as f:
+                                lines = f.readlines()[-10:]
+                        except:
+                            pass
+
+                        if not lines:
+                            send(token, chat_id, "📜 لا يوجد سجل تداول بعد")
+                            continue
+
+                        msg = "📜 آخر الصفقات\n\n"
+
+                        for line in reversed(lines):
+                            try:
+                                d = json.loads(line)
+
+                                msg += (
+                                    f"{d.get('action')} "
+                                    f"{d.get('symbol')} "
+                                    f"{d.get('qty')}kg @ "
+                                    f"{d.get('price')}\n"
+                                )
+
+                            except:
+                                pass
+
+                        send(token, chat_id, msg)
+
+                    except Exception as e:
+                        send(token, chat_id, f"❌ History error: {e}")
+
+
+elif text in ("/portfolio", "/balance", "/inventory"):
+                    try:
+                        import os
+                        from api_client import BullionVaultAPI
+                        from parser import parse_balance, parse_market, best_bid, best_ask
+
+                        api = BullionVaultAPI(os.getenv("BV_USERNAME"), os.getenv("BV_PASSWORD"))
+
+                        bal_root = api.view_balance(simple=True)
+                        bal = parse_balance(bal_root) if bal_root is not None else {}
+
+                        market_root = api.view_market()
+                        market = parse_market(market_root) if market_root is not None else {}
+
+                        if isinstance(market, list):
+                            market = {
+                                item.get("security_id") or item.get("id") or item.get("symbol") or item.get("security"): item
+                                for item in market
+                                if isinstance(item, dict)
+                            }
+
+                        name_map = {
+                            "AGXLN": "Silver",
+                            "AUXLN": "Gold",
+                            "PTXLN": "Platinum",
+                            "PDXLN": "Palladium",
+                        }
+
+                        usd = float(bal.get("USD", {}).get("available", 0) or 0)
+                        gbp = float(bal.get("GBP", {}).get("available", 0) or 0)
+                        eur = float(bal.get("EUR", {}).get("available", 0) or 0)
+
+                        if text == "/balance":
+                            msg = (
+                                "💵 Cash Balance\n\n"
+                                f"USD: ${usd:,.2f}\n"
+                                f"GBP: £{gbp:,.2f}\n"
+                                f"EUR: €{eur:,.2f}"
+                            )
+                            send(token, chat_id, msg)
+                            continue
+
+                        metals_msg = ""
+                        metals_total = 0.0
+                        found = False
+
+                        for k, v in bal.items():
+                            if k in ("USD", "GBP", "EUR"):
+                                continue
+
+                            qty = float(v.get("available", 0) or 0)
+                            reserved = float(v.get("reserved", 0) or 0)
+
+                            if qty <= 0 and reserved <= 0:
+                                continue
+
+                            md = market.get(k, {})
+                            bid = best_bid(md)
+                            ask = best_ask(md)
+                            price = float(bid or ask or 0)
+
+                            value = qty * price
+                            metals_total += value
+                            found = True
+
+                            metals_msg += (
+                                f"- {name_map.get(k, k)} ({k})\n"
+                                f"  Available: {qty:.6f} kg\n"
+                                f"  Reserved: {reserved:.6f} kg\n"
+                                f"  Current Price: ${price:,.2f}/kg\n"
+                                f"  Current Value: ${value:,.2f}\n\n"
+                            )
+
+                        if not found:
+                            metals_msg = "- No metal holdings found\n"
+
+                        if text == "/inventory":
+                            msg = "📦 Metals Inventory With Current Value\n\n"
+                            msg += metals_msg
+                            msg += f"📊 Total Metals Value: ${metals_total:,.2f}"
+                            send(token, chat_id, msg)
+                            continue
+
+                        msg = "💼 Portfolio Snapshot\n\n"
+                        msg += f"💵 USD Cash: ${usd:,.2f}\n"
+                        msg += f"💷 GBP Cash: £{gbp:,.2f}\n"
+                        msg += f"💶 EUR Cash: €{eur:,.2f}\n\n"
+                        msg += "📦 Metals Value:\n"
+                        msg += metals_msg
+                        msg += f"📊 Total Metals Value: ${metals_total:,.2f}\n"
+                        msg += f"🏦 Total Portfolio Approx: ${usd + metals_total:,.2f}"
+
+                        send(token, chat_id, msg)
+
+                    except Exception as e:
+                        send(token, chat_id, f"❌ Portfolio error: {e}")
+
+                elif text in ("/pending_order", "/order"):
+                    order = load_pending()
+                    if not order:
+                        send(token, chat_id, "لا يوجد أمر معلّق.")
+                    else:
+                        send(token, chat_id, json.dumps(order, indent=2))
+
+                elif text == "/cancel_order":
+                    clear_pending()
+                    send(token, chat_id, "✅ Pending order cancelled")
+
+                elif text == "/confirm_order":
+                    send(token, chat_id, "⏳ Executing pending manual order...")
+                    result = execute_pending_order()
+                    send(token, chat_id, result)
+
+                elif (
+                    text.startswith("/buy_silver ")
+                    or text.startswith("/sell_silver ")
+                    or text.startswith("/buy_palladium ")
+                    or text.startswith("/sell_palladium ")
+                ):
+                    order, err = parse_manual_order(text)
+                    if err:
+                        send(token, chat_id, f"❌ {err}")
+                        continue
+
+                    save_pending(order)
+                    preview = estimate_preview(
+                        order["action"],
+                        order["symbol_key"],
+                        order["qty"],
+                        order["limit_price"],
+                    )
+                    send(token, chat_id, preview)
+
+                elif text == "/help":
+                    send(
+                        token,
+                        chat_id,
+                        "🤖 Guardian Commands:\n"
+                        "/status\n"
+                        "/positions\n"
+                        "/pause\n"
+                        "/resume\n"
+                        "/no_buy\n"
+                        "/allow_buy\n"
+                        "/no_sell\n"
+                        "/allow_sell\n"
+                        "/no_silver\n"
+                        "/allow_silver\n"
+                        "/no_palladium\n"
+                        "/allow_palladium\n"
+                        "/close_all\n"
+                        "/buy_silver qty price\n"
+                        "/sell_silver qty price\n"
+                        "/buy_palladium qty price\n"
+                        "/sell_palladium qty price\n"
+                        "/pending_order\n"
+                        "/confirm_order\n"
+                        "/cancel_order\n"
+                        "/portfolio\n"
+                        "/balance\n"
+                        "/inventory\n"
+                        "/history"
+                    )
+
+        except Exception as exc:
+            try:
+                send(token, chat_id, f"⚠️ Command Center error: {exc}")
+            except Exception:
+                pass
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

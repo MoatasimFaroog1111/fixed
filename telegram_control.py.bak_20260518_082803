@@ -1,0 +1,206 @@
+import json
+import time
+import requests
+from pathlib import Path
+
+BASE_DIR = Path("/home/moatasim/fixed")
+ENV_FILE = BASE_DIR / ".env"
+CONTROL_FILE = BASE_DIR / "control_state.json"
+
+def load_env():
+    env = {}
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env
+
+def load_state():
+    default = {
+        "paused": False,
+        "allow_buy": True,
+        "allow_sell": True,
+        "silver_enabled": True,
+        "palladium_enabled": True,
+        "stop_loss_enabled": True,
+        "emergency_close_all": False,
+        "paused_after_close_all": True,
+    }
+    if CONTROL_FILE.exists():
+        try:
+            default.update(json.loads(CONTROL_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return default
+
+def save_state(state):
+    CONTROL_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+def send(token, chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={"chat_id": chat_id, "text": text},
+        timeout=20,
+    )
+
+def get_updates(token, offset=None):
+    params = {"timeout": 30}
+    if offset is not None:
+        params["offset"] = offset
+    r = requests.get(
+        f"https://api.telegram.org/bot{token}/getUpdates",
+        params=params,
+        timeout=40,
+    )
+    r.raise_for_status()
+    return r.json()
+
+def main():
+    env = load_env()
+    token = env.get("TG_TOKEN_SILVER") or env.get("TG_TOKEN_PALLADIUM")
+    chat_id = str(env.get("TG_CHAT_ID", "")).strip()
+
+    if not token or not chat_id:
+        raise SystemExit("Missing Telegram token or chat id")
+
+    send(token, chat_id, "✅ Guardian Telegram Command Center started")
+
+    offset = None
+
+    while True:
+        try:
+            data = get_updates(token, offset)
+
+            for item in data.get("result", []):
+                offset = item["update_id"] + 1
+                msg = item.get("message") or {}
+                incoming_chat = str((msg.get("chat") or {}).get("id", ""))
+
+                if incoming_chat != chat_id:
+                    continue
+
+                text = (msg.get("text") or "").strip().lower()
+                state = load_state()
+
+                if text == "/positions":
+                    try:
+                        report = "📦 OPEN POSITIONS\\n\\n"
+
+                        logs = [
+                            ("🥈 Silver", Path("/home/moatasim/fixed/bot_silver.log")),
+                            ("🪙 Palladium", Path("/home/moatasim/fixed/bot_palladium.log")),
+                        ]
+
+                        found = False
+
+                        for name, log_file in logs:
+                            if not log_file.exists():
+                                continue
+
+                            lines = log_file.read_text(
+                                encoding="utf-8",
+                                errors="ignore"
+                            ).splitlines()[-300:]
+
+                            latest = None
+
+                            for line in reversed(lines):
+                                if "مركز |" in line:
+                                    latest = line
+                                    break
+
+                            if latest:
+                                found = True
+                                report += f"{name}\\n{latest}\\n\\n"
+
+                        if not found:
+                            report += "No open positions"
+
+                        send(token, chat_id, report)
+                        continue
+
+                    except Exception as exc:
+                        send(token, chat_id, f"❌ positions error: {exc}")
+                        continue
+
+                if text == "/status":
+                    send(token, chat_id, "📊 STATUS\n" + json.dumps(state, indent=2))
+
+                elif text == "/pause":
+                    state["paused"] = True
+                    save_state(state)
+                    send(token, chat_id, "⏸️ Bot paused")
+
+                elif text == "/resume":
+                    state["paused"] = False
+                    save_state(state)
+                    send(token, chat_id, "▶️ Bot resumed")
+
+                elif text == "/no_buy":
+                    state["allow_buy"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 BUY disabled")
+
+                elif text == "/allow_buy":
+                    state["allow_buy"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ BUY enabled")
+
+                elif text == "/no_sell":
+                    state["allow_sell"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 SELL disabled")
+
+                elif text == "/allow_sell":
+                    state["allow_sell"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ SELL enabled")
+
+                elif text == "/no_silver":
+                    state["silver_enabled"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 Silver disabled")
+
+                elif text == "/allow_silver":
+                    state["silver_enabled"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ Silver enabled")
+
+                elif text == "/no_palladium":
+                    state["palladium_enabled"] = False
+                    save_state(state)
+                    send(token, chat_id, "🛑 Palladium disabled")
+
+                elif text == "/allow_palladium":
+                    state["palladium_enabled"] = True
+                    save_state(state)
+                    send(token, chat_id, "✅ Palladium enabled")
+
+                elif text == "/close_all":
+                    state["emergency_close_all"] = True
+                    state["allow_buy"] = False
+                    state["paused"] = False
+                    save_state(state)
+                    send(
+                        token,
+                        chat_id,
+                        "🚨 CLOSE ALL activated\nBuying disabled.\nBot will attempt to close all positions.",
+                    )
+
+                elif text == "/help":
+                    send(
+                        token,
+                        chat_id,
+                        "🤖 Guardian Commands:\n/status\n/positions\n/pause\n/resume\n/no_buy\n/allow_buy\n/no_sell\n/allow_sell\n/no_silver\n/allow_silver\n/no_palladium\n/allow_palladium\n/close_all",
+                    )
+
+        except Exception as exc:
+            try:
+                send(token, chat_id, f"⚠️ Command Center error: {exc}")
+            except Exception:
+                pass
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()

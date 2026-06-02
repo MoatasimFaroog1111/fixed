@@ -1,0 +1,10 @@
+{
+  "paused": false,
+  "allow_buy": true,
+  "allow_sell": true,
+  "silver_enabled": true,
+  "palladium_enabled": true,
+  "stop_loss_enabled": true,
+  "emergency_close_all": false,
+  "paused_after_close_all": true
+}

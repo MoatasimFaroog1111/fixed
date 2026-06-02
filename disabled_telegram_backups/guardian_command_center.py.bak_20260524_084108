@@ -1,0 +1,53 @@
+import os, time, json, requests
+from pathlib import Path
+
+TOKEN = os.getenv("TG_TOKEN_PALLADIUM") or os.getenv("TG_TOKEN_SILVER") or os.getenv("TG_TOKEN")
+CHAT_ID = str(os.getenv("TG_CHAT_ID", "")).strip()
+OFFSET_FILE = Path("telegram_offset.txt")
+HISTORY_FILE = Path("trade_history.jsonl")
+
+if not TOKEN:
+    raise RuntimeError("Missing Telegram token")
+
+def send(msg):
+    if CHAT_ID:
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg}, timeout=15)
+
+def history_msg():
+    if not HISTORY_FILE.exists() or HISTORY_FILE.stat().st_size == 0:
+        return "📜 لا يوجد سجل تداول بعد"
+    lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()[-10:]
+    msg = "📜 آخر الصفقات\n\n"
+    for line in reversed(lines):
+        try:
+            d = json.loads(line)
+            msg += f"{d.get('logged_at','')} | {d.get('action')} {d.get('symbol')} {d.get('qty')}kg @ {d.get('price')}\n"
+        except Exception:
+            pass
+    return msg.strip()
+
+def main():
+    send("✅ Guardian Unified Command Center started")
+    offset = None
+    while True:
+        try:
+            params = {"timeout": 30}
+            if offset:
+                params["offset"] = offset
+            r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", params=params, timeout=40)
+            r.raise_for_status()
+            for upd in r.json().get("result", []):
+                offset = upd["update_id"] + 1
+                text = str((upd.get("message") or {}).get("text", "")).strip()
+                if text == "/help":
+                    send("📋 Guardian Unified Command Center\n\n/help — قائمة الأوامر\n/history — آخر الصفقات")
+                elif text == "/history":
+                    send(history_msg())
+                elif text:
+                    send(f"❓ أمر غير معروف: {text}\nأرسل /help")
+        except Exception as e:
+            print("Command center error:", e)
+            time.sleep(10)
+
+if __name__ == "__main__":
+    main()

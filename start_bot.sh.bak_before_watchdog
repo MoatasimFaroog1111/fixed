@@ -1,0 +1,23 @@
+#!/bin/bash
+cd /home/moatasim/fixed
+source /home/moatasim/fixed/venv/bin/activate
+
+while true
+do
+  echo "[$(date)] Starting Guardian services..."
+
+  python /home/moatasim/fixed/run_all_bots.py &
+  BOT_PID=$!
+
+  python /home/moatasim/fixed/telegram_control.py &
+  CTRL_PID=$!
+
+  wait -n $BOT_PID $CTRL_PID
+
+  echo "[$(date)] One service stopped. Restarting both..."
+
+  kill $BOT_PID 2>/dev/null
+  kill $CTRL_PID 2>/dev/null
+
+  sleep 5
+done
