@@ -1,0 +1,26 @@
+[run]
+source = .
+omit =
+    tests/*
+    bot_*.py
+    run_all_bots.py
+    celery_*.py
+    telegram_*.py
+    daily_reporter.py
+    guardian_command_center.py
+    historical_trainer.py
+    monitoring.py
+    watchdog.py
+    data_fetcher.py
+    database.py
+    db_logger.py
+    news_analyzer.py
+    ml_predictor.py
+    base_bot.py
+    base_bot_break_even.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__
+    raise NotImplementedError
