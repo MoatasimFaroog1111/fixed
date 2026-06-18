@@ -1,6 +1,6 @@
 """BullionVault Bot — PLATINUM (PTXLN) v5"""
-import os, sys
 from base_bot import BaseMetalBot
+from shared_utils import launch_bot
 
 class PlatinumBot(BaseMetalBot):
     BOT_NAME      = "PlatinumBot"
@@ -28,9 +28,4 @@ class PlatinumBot(BaseMetalBot):
     TG_CHAT_ENV  = "TG_CHAT_ID"
 
 if __name__ == "__main__":
-    u = os.environ.get("BV_USERNAME")
-    p = os.environ.get("BV_PASSWORD")
-    if not u or not p:
-        print("ERROR: Set BV_USERNAME and BV_PASSWORD")
-        sys.exit(1)
-    PlatinumBot(u, p).run()
+    launch_bot(PlatinumBot)
