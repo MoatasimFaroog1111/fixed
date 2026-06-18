@@ -1,5 +1,8 @@
+import logging
 from datetime import datetime
 from database import SessionLocal, TradeLog, BotStatus
+
+logger = logging.getLogger(__name__)
 
 
 def log_trade(symbol, side, quantity, price, status, bot_name):
@@ -19,7 +22,7 @@ def log_trade(symbol, side, quantity, price, status, bot_name):
         return row.id
     except Exception as e:
         db.rollback()
-        print(f"DB log_trade error: {e}")
+        logger.error("DB log_trade error: %s", e)
         return None
     finally:
         db.close()
@@ -39,7 +42,7 @@ def update_bot_status(bot_name, status, message=""):
         return row.id
     except Exception as e:
         db.rollback()
-        print(f"DB update_bot_status error: {e}")
+        logger.error("DB update_bot_status error: %s", e)
         return None
     finally:
         db.close()
