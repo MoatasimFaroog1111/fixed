@@ -6,6 +6,7 @@ data_fetcher.py v2
 شغّله مرة واحدة: python data_fetcher.py
 """
 import os
+import io
 import pickle
 import numpy as np
 import pandas as pd
@@ -80,12 +81,42 @@ def fetch_hourly(security_id: str, ticker: str, name: str) -> pd.DataFrame:
         return None
 
 
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Only allow pandas/numpy types to prevent arbitrary code execution."""
+    _ALLOWED_MODULES = frozenset({
+        "numpy", "numpy.core.multiarray", "numpy.core.numeric",
+        "numpy.dtype", "numpy.ndarray",
+        "pandas", "pandas.core.frame", "pandas.core.series",
+        "pandas.core.indexes.base", "pandas.core.indexes.datetimes",
+        "pandas.core.indexes.range", "pandas.core.internals.managers",
+        "pandas.core.internals.blocks",
+        "pandas._libs.tslibs.timestamps", "pandas._libs.tslibs.nattype",
+        "pandas._libs.tslibs.np_datetime", "pandas._libs.lib",
+        "pandas._libs.internals",
+        "datetime", "collections", "builtins", "copy", "codecs",
+        "_codecs",
+    })
+
+    def find_class(self, module: str, name: str):
+        top = module.split(".")[0]
+        if top in ("numpy", "pandas", "datetime", "collections",
+                   "builtins", "copy", "codecs", "_codecs"):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Blocked unpickling of {module}.{name}"
+        )
+
+
+def _safe_pickle_load(path: str):
+    with open(path, "rb") as f:
+        return _RestrictedUnpickler(f).load()
+
+
 def load_prices(security_id: str, interval: str = "daily") -> np.ndarray:
     path = os.path.join(DATA_DIR, f"{security_id}_{interval}.pkl")
     if not os.path.exists(path):
         return None
-    with open(path, "rb") as f:
-        df = pickle.load(f)
+    df = _safe_pickle_load(path)
     return df["close"].values.astype(float)
 
 
@@ -93,8 +124,7 @@ def load_dataframe(security_id: str, interval: str = "daily") -> pd.DataFrame:
     path = os.path.join(DATA_DIR, f"{security_id}_{interval}.pkl")
     if not os.path.exists(path):
         return None
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    return _safe_pickle_load(path)
 
 
 if __name__ == "__main__":

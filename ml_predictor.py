@@ -14,6 +14,20 @@ import os
 from collections import deque
 from typing import Optional
 
+
+class _RestrictedModelUnpickler(pickle.Unpickler):
+    """Only allow sklearn/xgboost/numpy types — blocks arbitrary code execution."""
+
+    def find_class(self, module: str, name: str):
+        top = module.split(".")[0]
+        if top in ("sklearn", "xgboost", "numpy", "scipy",
+                    "collections", "builtins", "copy", "codecs",
+                    "_codecs", "datetime"):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Blocked unpickling of {module}.{name}"
+        )
+
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = "models"
@@ -163,9 +177,9 @@ class EnsemblePredictor:
         if os.path.exists(model_path) and os.path.exists(scaler_path):
             try:
                 with open(model_path,  "rb") as f:
-                    self.model  = pickle.load(f)
+                    self.model  = _RestrictedModelUnpickler(f).load()
                 with open(scaler_path, "rb") as f:
-                    self.scaler = pickle.load(f)
+                    self.scaler = _RestrictedModelUnpickler(f).load()
                 self.is_trained = True
                 logger.info(f"✅ {self.security_id}: نموذج تاريخي مُحمَّل")
             except Exception as e:

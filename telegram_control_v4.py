@@ -15,19 +15,20 @@ from parser import parse_market, parse_balance, best_bid, best_ask
 TOKEN   = os.getenv("TG_TOKEN_SILVER") or os.getenv("TG_TOKEN")
 CHAT_ID = os.getenv("TG_CHAT_ID")      or os.getenv("CHAT_ID")
 OFFSET_FILE   = Path("telegram_offset.txt")
-CONTROL_FILE  = Path("/home/moatasim/fixed/control_state.json")
-TRADE_LOG     = Path("/home/moatasim/fixed/trade_log.json")
+_BASE_DIR     = Path(__file__).resolve().parent
+CONTROL_FILE  = _BASE_DIR / "control_state.json"
+TRADE_LOG     = _BASE_DIR / "trade_log.json"
 STATE_FILES   = {
-    "gold":      Path("/home/moatasim/fixed/state_AUXLN.json"),
-    "silver":    Path("/home/moatasim/fixed/state_AGXLN.json"),
-    "platinum":  Path("/home/moatasim/fixed/state_PTXLN.json"),
-    "palladium": Path("/home/moatasim/fixed/state_PDXLN.json"),
+    "gold":      _BASE_DIR / "state_AUXLN.json",
+    "silver":    _BASE_DIR / "state_AGXLN.json",
+    "platinum":  _BASE_DIR / "state_PTXLN.json",
+    "palladium": _BASE_DIR / "state_PDXLN.json",
 }
 PRICE_LOG_FILES = {
-    "gold":      Path("/home/moatasim/fixed/price_log_AUXLN.json"),
-    "silver":    Path("/home/moatasim/fixed/price_log_AGXLN.json"),
-    "platinum":  Path("/home/moatasim/fixed/price_log_PTXLN.json"),
-    "palladium": Path("/home/moatasim/fixed/price_log_PDXLN.json"),
+    "gold":      _BASE_DIR / "price_log_AUXLN.json",
+    "silver":    _BASE_DIR / "price_log_AGXLN.json",
+    "platinum":  _BASE_DIR / "price_log_PTXLN.json",
+    "palladium": _BASE_DIR / "price_log_PDXLN.json",
 }
 METALS = {
     "gold":      {"name":"Gold",      "symbol":"AUXLN","currency":"USD", "emoji":"🥇"},
@@ -48,7 +49,11 @@ DEFAULT_QTYS  = {
 }
 ROUND_TO = {"gold": 10, "silver": 10, "platinum": 10, "palladium": 10}
 
-_api = BullionVaultAPI(os.getenv("BV_USERNAME",""), os.getenv("BV_PASSWORD",""))
+_bv_username = os.getenv("BV_USERNAME", "")
+_bv_password = os.getenv("BV_PASSWORD", "")
+if not _bv_username or not _bv_password:
+    print("WARNING: BV_USERNAME / BV_PASSWORD not set — API calls will fail")
+_api = BullionVaultAPI(_bv_username, _bv_password)
 _api_logged_in    = False
 _price_cache:dict = {}
 _price_cache_time:dict = {}

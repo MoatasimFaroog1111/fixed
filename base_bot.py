@@ -60,31 +60,31 @@ def log_trade_memory(event: dict):
 
 
 # ── Price Log ─────────────────────────────────────────────────────
+_BASE_DIR = Path(__file__).resolve().parent
+
+
 def log_price_history(security_id: str, price: float, max_len: int = 200):
     """يحفظ آخر 200 سعر في ملف JSON لكل معدن."""
-    import json
-    path = f"/home/moatasim/fixed/price_log_{security_id}.json"
+    path = _BASE_DIR / f"price_log_{security_id}.json"
     try:
-        import os
         data = []
-        if os.path.exists(path):
+        if path.exists():
             with open(path) as f:
                 data = json.load(f)
         data.append({"price": price, "ts": datetime.utcnow().isoformat()})
         data = data[-max_len:]
         with open(path, "w") as f:
             json.dump(data, f)
-    except Exception as e:
+    except Exception:
         pass
 
 # ── Trade Log ──────────────────────────────────────────────────────
 def log_closed_trade(trade, exit_price: float, reason: str):
     """يسجل الصفقة المغلقة في trade_log.json."""
-    import json, os
-    path = "/home/moatasim/fixed/trade_log.json"
+    path = _BASE_DIR / "trade_log.json"
     try:
         data = []
-        if os.path.exists(path):
+        if path.exists():
             with open(path) as f:
                 data = json.load(f)
         pnl = (exit_price - trade.entry_price) * trade.quantity
@@ -414,7 +414,7 @@ class BaseMetalBot:
     # ── مراقبة المراكز المفتوحة ───────────────────────────────────
 
     def _control_state(self) -> dict:
-        path = Path("/home/moatasim/fixed/control_state.json")
+        path = _BASE_DIR / "control_state.json"
         default = {
             "paused": False,
             "allow_buy": True,
@@ -434,7 +434,7 @@ class BaseMetalBot:
         return default
 
     def _save_control_state(self, state: dict):
-        path = Path("/home/moatasim/fixed/control_state.json")
+        path = _BASE_DIR / "control_state.json"
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def _monitor_positions(self, market_data, balance: dict):

@@ -240,7 +240,7 @@ class TradingStrategy:
         return 0.0
 
     def _control_state(self) -> dict:
-        path = Path("/home/moatasim/fixed/control_state.json")
+        path = Path(__file__).resolve().parent / "control_state.json"
         default = {
             "paused": False,
             "allow_buy": True,

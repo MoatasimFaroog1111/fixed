@@ -15,15 +15,16 @@ from parser import parse_market, parse_balance, best_bid, best_ask
 TOKEN   = os.getenv("TG_TOKEN_SILVER") or os.getenv("TG_TOKEN")
 CHAT_ID = os.getenv("TG_CHAT_ID")      or os.getenv("CHAT_ID")
 OFFSET_FILE   = Path("telegram_offset.txt")
-CONTROL_FILE  = Path("/home/moatasim/fixed/control_state.json")
-TRADE_LOG     = Path("/home/moatasim/fixed/trade_log.json")
+_BASE_DIR     = Path(__file__).resolve().parent
+CONTROL_FILE  = _BASE_DIR / "control_state.json"
+TRADE_LOG     = _BASE_DIR / "trade_log.json"
 STATE_FILES   = {
-    "silver":    Path("/home/moatasim/fixed/state_AGXLN.json"),
-    "palladium": Path("/home/moatasim/fixed/state_PDXLN.json"),
+    "silver":    _BASE_DIR / "state_AGXLN.json",
+    "palladium": _BASE_DIR / "state_PDXLN.json",
 }
 PRICE_LOG_FILES = {
-    "silver":    Path("/home/moatasim/fixed/price_log_AGXLN.json"),
-    "palladium": Path("/home/moatasim/fixed/price_log_PDXLN.json"),
+    "silver":    _BASE_DIR / "price_log_AGXLN.json",
+    "palladium": _BASE_DIR / "price_log_PDXLN.json",
 }
 METALS = {
     "silver":    {"name":"Silver",    "symbol":"AGXLN","currency":"USD"},
@@ -31,12 +32,37 @@ METALS = {
 }
 DAILY_REPORT_HOUR_UTC = 21
 
-_api = BullionVaultAPI(os.getenv("BV_USERNAME",""), os.getenv("BV_PASSWORD",""))
+_bv_username = os.getenv("BV_USERNAME", "")
+_bv_password = os.getenv("BV_PASSWORD", "")
+if not _bv_username or not _bv_password:
+    print("WARNING: BV_USERNAME / BV_PASSWORD not set — API calls will fail")
+_api = BullionVaultAPI(_bv_username, _bv_password)
 _api_logged_in    = False
 _price_cache:dict = {}
 _price_cache_time:dict = {}
 CACHE_TTL      = 30
 _alerted_tp_sl:set = set()
+
+# ── Auth ──────────────────────────────────────────────────────────
+ALLOWED_CHAT_IDS: set = set()
+_raw_ids = os.getenv("TG_ALLOWED_CHAT_IDS", "")
+if _raw_ids:
+    ALLOWED_CHAT_IDS = {int(x.strip()) for x in _raw_ids.split(",") if x.strip()}
+if CHAT_ID:
+    try:
+        ALLOWED_CHAT_IDS.add(int(CHAT_ID))
+    except ValueError:
+        pass
+
+
+def is_authorized_chat(chat_id) -> bool:
+    if not ALLOWED_CHAT_IDS:
+        return True
+    try:
+        return int(chat_id) in ALLOWED_CHAT_IDS
+    except (ValueError, TypeError):
+        return False
+
 
 # ── Login ──────────────────────────────────────────────────────────
 def _ensure_login():
@@ -577,6 +603,9 @@ def main():
                 offset=u["update_id"]+1; save_offset(offset)
                 msg=u.get("message")
                 if not msg: continue
+                chat_id = msg.get("chat", {}).get("id")
+                if not is_authorized_chat(chat_id):
+                    continue
                 text=msg.get("text","").strip()
                 if not text.startswith("/"): continue
                 tg_send(handle_command(text))
