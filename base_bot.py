@@ -23,17 +23,20 @@ from monitoring import write_heartbeat
 from state_manager import StateManager
 from daily_reporter import DailyReporter
 
+logger_init = logging.getLogger(__name__)
+
 try:
     from db_logger import log_trade, update_bot_status
     DB_LOGGING_AVAILABLE = True
 except Exception as e:
-    print(f"DB logger disabled: {e}")
+    logger_init.warning("DB logger disabled: %s", e)
     DB_LOGGING_AVAILABLE = False
 
 try:
     from news_analyzer import NewsAnalyzer
     NEWS_AVAILABLE = True
-except Exception:
+except Exception as e:
+    logger_init.warning("NewsAnalyzer unavailable: %s", e)
     NEWS_AVAILABLE = False
 
 
@@ -56,7 +59,7 @@ def log_trade_memory(event: dict):
         with open(TRADE_MEMORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception as e:
-        print(f"Trade memory log failed: {e}")
+        logging.getLogger(__name__).warning("Trade memory log failed: %s", e)
 
 
 # ── Price Log ─────────────────────────────────────────────────────
@@ -75,7 +78,7 @@ def log_price_history(security_id: str, price: float, max_len: int = 200):
         with open(path, "w") as f:
             json.dump(data, f)
     except Exception as e:
-        pass
+        logging.getLogger(__name__).debug("Price history log failed for %s: %s", security_id, e)
 
 # ── Trade Log ──────────────────────────────────────────────────────
 def log_closed_trade(trade, exit_price: float, reason: str):
@@ -106,7 +109,7 @@ def log_closed_trade(trade, exit_price: float, reason: str):
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        pass
+        logging.getLogger(__name__).warning("Closed trade log failed: %s", e)
 
 MIN_DAILY_PROFIT_TARGET_USD = 100
 PROFIT_LOCK_USD = 70
@@ -288,8 +291,8 @@ class BaseMetalBot:
             if self.state_mgr:
                 summary = self.state_mgr.data.get("daily", {})
                 return summary.get(yesterday, {}).get("pnl", 0.0)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning("Failed to get yesterday PnL: %s", e)
         return 0.0
 
     def _daily_target_adjustments(self) -> tuple:
@@ -734,7 +737,8 @@ class BaseMetalBot:
         stats = self.risk.get_stats()
         try:
             trend = self.strategy._ma_trend()
-        except Exception:
+        except Exception as e:
+            self.logger.warning("MA trend calculation failed, defaulting to NEUTRAL: %s", e)
             trend = "NEUTRAL"
 
         scalp = self.hourly_strategy.evaluate_from_prices(
@@ -971,8 +975,8 @@ class BaseMetalBot:
                     _ask = _pa(market_data, self.SECURITY_ID, self.CURRENCY)
                     if _bid and _ask:
                         log_price_history(self.SECURITY_ID, (_bid+_ask)/2)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug("Price logging failed: %s", e)
 
                 balance = self._fetch_balance()
                 _raw = balance.get("USD", 0)

@@ -7,11 +7,14 @@ data_fetcher.py v2
 """
 import os
 import pickle
+import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 
 import yfinance as yf   # يجب أن يكون مثبتاً: pip install -r requirements.txt
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR    = "data"
 START_DAILY = "2013-01-01"
@@ -57,7 +60,7 @@ def fetch_daily(security_id: str, ticker: str, name: str) -> pd.DataFrame:
         print(f"  ✅ {len(df):,} يوم | {df.index[0].date()} ← {df.index[-1].date()}")
         return df
     except Exception as e:
-        print(f"  ❌ {e}")
+        logger.error("Failed to fetch daily data for %s: %s", name, e)
         return None
 
 
@@ -76,7 +79,7 @@ def fetch_hourly(security_id: str, ticker: str, name: str) -> pd.DataFrame:
         print(f"  ✅ {len(df):,} ساعة | {df.index[0].date()} ← {df.index[-1].date()}")
         return df
     except Exception as e:
-        print(f"  ❌ {e}")
+        logger.error("Failed to fetch hourly data for %s: %s", name, e)
         return None
 
 
