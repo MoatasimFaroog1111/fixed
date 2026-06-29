@@ -59,7 +59,6 @@ def build_dataset(prices: np.ndarray):
 
     X = np.array(X)
     raw_arr = np.array(raw_prices + [raw_prices[-1]])
-    # خذ labels للسعر i+1 (اتجاه الحركة التالية)
     y = _make_labels(raw_arr)[:-1]
     return X, y
 
@@ -68,7 +67,6 @@ def train_metal(security_id: str):
     logger.info(f"{'='*55}")
     logger.info(f"  تدريب: {security_id}")
 
-    # أولوية: ساعية → يومية
     prices = load_prices(security_id, "hourly")
     source = "ساعية"
     if prices is None or len(prices) < LOOKBACK + 100:
@@ -97,7 +95,6 @@ def train_metal(security_id: str):
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
 
-    # StandardScaler
     scaler    = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_test_s  = scaler.transform(X_test)
@@ -114,15 +111,12 @@ def train_metal(security_id: str):
 
     logger.info(f"  ✅ Train Accuracy : {acc_train:.1%}")
     logger.info(f"  ✅ Test  Accuracy : {acc_test:.1%}")
-    logger.info("```")
     logger.info(classification_report(
         y_test, y_pred_test,
         target_names=["HOLD", "BUY", "SELL"],
         zero_division=0
     ))
-    logger.info("```")
 
-    # حفظ
     model_path  = os.path.join(MODELS_DIR, f"{security_id}_model.pkl")
     scaler_path = os.path.join(MODELS_DIR, f"{security_id}_scaler.pkl")
     with open(model_path,  "wb") as f: pickle.dump(model,  f)
@@ -135,7 +129,7 @@ if __name__ == "__main__":
     if not SKLEARN_OK:
         exit(1)
 
-    metals  = ["AUXLN", "AGXLN", "PTXLN", "PDXLN")
+    metals  = ["AUXLN", "AGXLN", "PTXLN", "PDXLN"]
     trained = 0
     for sid in metals:
         daily  = os.path.exists(os.path.join(DATA_DIR, f"{sid}_daily.pkl"))
