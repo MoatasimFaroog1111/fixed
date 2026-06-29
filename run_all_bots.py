@@ -35,9 +35,11 @@ BOTS = {
     "PALLADIUM": "bot_palladium.py",
 }
 
-# ملف مستقل يُشغَّل كعملية منفصلة
+# خدمات مستقلة تعمل كعمليات منفصلة.
+# نستخدم المشغّل الآمن بدلاً من telegram_control_v4.py مباشرة حتى تكون
+# الصلاحيات والمسارات متوافقة مع Railway وبدون أسرار داخل Git.
 SERVICES = {
-    "TELEGRAM_CMD": "telegram_control_v4.py",
+    "TELEGRAM_CMD": "telegram_control_v4_secure.py",
 }
 
 
