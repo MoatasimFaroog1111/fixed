@@ -3,4 +3,24 @@ venv/
 __pycache__/
 *.pyc
 *.log
+*.log.*
 *.db
+*.out
+
+# Runtime state files
+state_*.json
+control_state.json
+price_log_*.json
+trade_history.jsonl
+trade_log.json
+telegram_offset.txt
+balance_usd
+pending_order.json
+authorized_users.json
+
+# Pickle model files
+models/*.pkl
+data/*.pkl
+
+# Runtime directories
+runtime/
