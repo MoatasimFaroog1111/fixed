@@ -3,16 +3,26 @@ Secure Railway startup wrapper for Guardian BullionVault bots.
 
 This file prepares runtime-only files from environment variables, avoids
 committing secrets to Git, and then starts run_all_bots.py.
+
+v2: تدريب تلقائي عند كل deploy إذا كانت النماذج غائبة أو بنيتها قديمة.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
+import pickle
+import subprocess
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR   = Path(__file__).resolve().parent
 LEGACY_DIR = Path("/home/moatasim/fixed")
+MODELS_DIR = BASE_DIR / "models"
+DATA_DIR   = BASE_DIR / "data"
+
+# عدد الـ features في v8 — إذا تغيّر يُعاد التدريب تلقائياً
+EXPECTED_FEATURE_COUNT = 80
+METALS = ["AUXLN", "AGXLN", "PTXLN", "PDXLN"]
 
 
 def _load_dotenv_if_available() -> None:
@@ -42,14 +52,13 @@ def _parse_ids(*env_names: str) -> list[int]:
 
 
 def ensure_authorized_users() -> None:
-    """Create authorized_users.json from env vars at runtime only."""
-    owners = _parse_ids("TG_OWNER_IDS", "TG_CHAT_ID", "CHAT_ID")
-    admins = _parse_ids("TG_ADMIN_IDS", "TG_ALLOWED_CHAT_IDS")
+    owners  = _parse_ids("TG_OWNER_IDS", "TG_CHAT_ID", "CHAT_ID")
+    admins  = _parse_ids("TG_ADMIN_IDS", "TG_ALLOWED_CHAT_IDS")
     viewers = _parse_ids("TG_VIEWER_IDS")
 
     auth = {
-        "owners": owners,
-        "admins": [x for x in admins if x not in owners],
+        "owners":  owners,
+        "admins":  [x for x in admins  if x not in owners],
         "viewers": [x for x in viewers if x not in owners and x not in admins],
     }
 
@@ -63,26 +72,19 @@ def ensure_authorized_users() -> None:
         )
     else:
         print(
-            "[SECURITY] authorized_users.json generated from environment "
+            f"[SECURITY] authorized_users.json generated "
             f"(owners={len(owners)}, admins={len(auth['admins'])}, viewers={len(auth['viewers'])})."
         )
 
 
 def ensure_legacy_path() -> None:
-    """
-    Keep compatibility with older modules that still reference /home/moatasim/fixed.
-    The preferred runtime path is BASE_DIR; this compatibility shim prevents crashes
-    while the codebase is being fully migrated to relative paths.
-    """
     try:
         if LEGACY_DIR.resolve() == BASE_DIR.resolve():
             return
     except Exception:
         pass
-
     if LEGACY_DIR.exists():
         return
-
     try:
         LEGACY_DIR.parent.mkdir(parents=True, exist_ok=True)
         LEGACY_DIR.symlink_to(BASE_DIR, target_is_directory=True)
@@ -96,9 +98,82 @@ def validate_required_env() -> None:
     if missing:
         print("ERROR: missing required BullionVault variables: " + ", ".join(missing))
         sys.exit(1)
-
     if not (os.getenv("TG_TOKEN_SILVER") or os.getenv("TG_TOKEN")):
-        print("WARNING: Telegram token not set. Telegram command center will not start correctly.")
+        print("WARNING: Telegram token not set.")
+
+
+def _model_needs_retrain(security_id: str) -> bool:
+    """
+    يرجع True إذا:
+      - النموذج غير موجود
+      - عدد الـ features لا يطابق v8 (80 feature)
+    """
+    model_path  = MODELS_DIR / f"{security_id}_model.pkl"
+    scaler_path = MODELS_DIR / f"{security_id}_scaler.pkl"
+
+    if not model_path.exists() or not scaler_path.exists():
+        print(f"[TRAIN] {security_id}: نموذج غير موجود → يحتاج تدريب")
+        return True
+
+    # تحقق من عدد الـ features في الـ scaler
+    try:
+        with open(scaler_path, "rb") as f:
+            scaler = pickle.load(f)
+        n_features = getattr(scaler, "n_features_in_", None)
+        if n_features is not None and n_features != EXPECTED_FEATURE_COUNT:
+            print(
+                f"[TRAIN] {security_id}: features قديمة ({n_features}) ≠ v8 ({EXPECTED_FEATURE_COUNT}) "
+                f"→ يحتاج تدريب"
+            )
+            return True
+    except Exception as e:
+        print(f"[TRAIN] {security_id}: خطأ في فحص النموذج: {e} → يحتاج تدريب")
+        return True
+
+    return False
+
+
+def auto_retrain_if_needed() -> None:
+    """
+    يفحص كل معدن — إذا أي نموذج يحتاج تدريب، يشغّل historical_trainer.py.
+    """
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # تحقق هل يوجد بيانات للتدريب
+    has_data = any(
+        (DATA_DIR / f"{sid}_hourly.pkl").exists() or
+        (DATA_DIR / f"{sid}_daily.pkl").exists()
+        for sid in METALS
+    )
+
+    if not has_data:
+        print(
+            "[TRAIN] لا توجد بيانات تاريخية — تخطي التدريب وسيعمل البوت بـ FallbackPredictor."
+        )
+        return
+
+    needs = [sid for sid in METALS if _model_needs_retrain(sid)]
+
+    if not needs:
+        print("[✅ TRAIN] جميع النماذج v8 جاهزة — لا حاجة لإعادة تدريب.")
+        return
+
+    print(f"[TRAIN] تدريب مطلوب لـ: {needs}")
+    print("[TRAIN] جاري تشغيل historical_trainer.py...")
+
+    result = subprocess.run(
+        [sys.executable, str(BASE_DIR / "historical_trainer.py")],
+        cwd=str(BASE_DIR),
+        env=os.environ.copy(),
+    )
+
+    if result.returncode == 0:
+        print("[✅ TRAIN] اكتمل التدريب بنجاح.")
+    else:
+        print(
+            f"[⚠️ TRAIN] خرج المدرب بكود {result.returncode}. "
+            f"سيعمل البوت بالنماذج القديمة أو FallbackPredictor."
+        )
 
 
 def main() -> None:
@@ -106,6 +181,9 @@ def main() -> None:
     ensure_legacy_path()
     ensure_authorized_users()
     validate_required_env()
+
+    # ── الجديد: تدريب تلقائي قبل تشغيل البوتات ──
+    auto_retrain_if_needed()
 
     target = BASE_DIR / "run_all_bots.py"
     os.execvpe(sys.executable, [sys.executable, str(target)], os.environ.copy())
