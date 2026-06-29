@@ -12,6 +12,7 @@ Consolidates duplicated patterns:
 import json
 import logging
 import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -202,6 +203,31 @@ def setup_logger(
     return logger
 
 
+def _install_quiet_shutdown(bot):
+    """Stop bot processes cleanly without spamming Telegram on normal redeploys.
+
+    Railway sends SIGTERM during redeploys/restarts. The original BaseMetalBot
+    shutdown handler sends "Bot stopping..." to Telegram for every metal bot,
+    which creates noisy duplicate messages. Keep this quiet by default and allow
+    opt-in with NOTIFY_BOT_STOP=1 when needed.
+    """
+    if os.environ.get("NOTIFY_BOT_STOP", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+
+    def quiet_shutdown(signum, frame):
+        try:
+            bot.logger.info("Shutdown. Stopping %s quietly...", bot.BOT_NAME)
+        except Exception:
+            pass
+        bot.running = False
+        bot._alerted_profit_100 = False
+        bot._alerted_loss_35 = False
+        bot._last_alert_date = None
+
+    signal.signal(signal.SIGINT, quiet_shutdown)
+    signal.signal(signal.SIGTERM, quiet_shutdown)
+
+
 # ── Bot Launcher ───────────────────────────────────────────────────────────
 
 def launch_bot(bot_class):
@@ -220,4 +246,7 @@ def launch_bot(bot_class):
     if not username or not password:
         print("ERROR: BV_USERNAME / BV_PASSWORD not set.")
         sys.exit(1)
-    bot_class(username, password).run()
+
+    bot = bot_class(username, password)
+    _install_quiet_shutdown(bot)
+    bot.run()
