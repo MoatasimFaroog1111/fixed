@@ -8,6 +8,7 @@ Consolidates duplicated patterns:
 - JSON file persistence helpers
 - Bot entry-point launcher
 - Logging setup
+- Conservative runtime risk profile
 """
 import json
 import logging
@@ -203,6 +204,80 @@ def setup_logger(
     return logger
 
 
+# ── Runtime Risk Profile ───────────────────────────────────────────────────
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except Exception:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except Exception:
+        return default
+
+
+def _apply_runtime_risk_profile(bot):
+    """Apply conservative risk controls without editing every metal bot.
+
+    This does not guarantee profit. It reduces low-quality entries by default:
+    fewer daily trades, stricter confidence, stricter spread, and DCA off unless
+    explicitly enabled. Values can be overridden from Railway Variables.
+    """
+    profile = os.environ.get("TRADING_PROFILE", "conservative").strip().lower()
+    if profile in {"legacy", "aggressive", "off", "none"}:
+        try:
+            bot.logger.info("Runtime risk profile disabled: %s", profile)
+        except Exception:
+            pass
+        return
+
+    max_daily_trades = _env_int("MAX_DAILY_TRADES", 3)
+    min_confidence = _env_float("MIN_CONFIDENCE", 0.70)
+    max_spread_pct = _env_float("MAX_SPREAD_PCT", 0.005)
+    max_spread_to_tp = _env_float("MAX_SPREAD_TO_TP_RATIO", 0.45)
+    dca_enabled = _env_bool("ENABLE_DCA", False)
+
+    bot.MAX_DAILY_TRADES = min(int(getattr(bot, "MAX_DAILY_TRADES", max_daily_trades)), max_daily_trades)
+    bot.CONFIDENCE_THRESHOLD = max(float(getattr(bot, "CONFIDENCE_THRESHOLD", min_confidence)), min_confidence)
+    bot.MAX_ACCEPTABLE_SPREAD_PCT = min(float(getattr(bot, "MAX_ACCEPTABLE_SPREAD_PCT", max_spread_pct)), max_spread_pct)
+    bot.DCA_ENABLED = bool(dca_enabled)
+    bot.SCALP_MAX_SPREAD_TO_TP_RATIO = min(float(getattr(bot, "SCALP_MAX_SPREAD_TO_TP_RATIO", max_spread_to_tp)), max_spread_to_tp)
+    bot.SCALP_MAX_TRADES_PER_DAY = min(int(getattr(bot, "SCALP_MAX_TRADES_PER_DAY", max_daily_trades)), max_daily_trades)
+
+    # Keep RiskManager config aligned because BaseMetalBot creates it in __init__.
+    try:
+        bot.risk.config.max_daily_trades = bot.MAX_DAILY_TRADES
+        bot.risk.config.confidence_threshold = bot.CONFIDENCE_THRESHOLD
+        bot.risk.config.max_acceptable_spread_pct = bot.MAX_ACCEPTABLE_SPREAD_PCT
+    except Exception:
+        pass
+
+    try:
+        bot.logger.info(
+            "Runtime risk profile active | profile=%s | max_daily_trades=%s | "
+            "min_confidence=%.2f | max_spread=%.2f%% | dca=%s | spread_to_tp=%.2f",
+            profile,
+            bot.MAX_DAILY_TRADES,
+            bot.CONFIDENCE_THRESHOLD,
+            bot.MAX_ACCEPTABLE_SPREAD_PCT * 100,
+            bot.DCA_ENABLED,
+            bot.SCALP_MAX_SPREAD_TO_TP_RATIO,
+        )
+    except Exception:
+        pass
+
+
 def _install_quiet_shutdown(bot):
     """Stop bot processes cleanly without spamming Telegram on normal redeploys.
 
@@ -248,5 +323,6 @@ def launch_bot(bot_class):
         sys.exit(1)
 
     bot = bot_class(username, password)
+    _apply_runtime_risk_profile(bot)
     _install_quiet_shutdown(bot)
     bot.run()
