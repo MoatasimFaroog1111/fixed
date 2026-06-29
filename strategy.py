@@ -1,14 +1,9 @@
 """
-Trading Strategy v9 FIXED
-- Keeps evaluate() inside TradingStrategy class.
-- Adds weighted signal quality:
-  ML + RSI + EMA Trend + Momentum + Volume/OrderBook + News + Session
-- Adds advanced execution sophistication:
-  Regime Detection + Dynamic Threshold + Dynamic Position Sizing + MTF proxy
-- Safe SELL behavior:
-  SELL can close existing long positions, but naked short is not opened by default.
-- Adds real price logging each cycle:
-  PRICE | bid=... ask=... mid=...
+Trading Strategy v10 — ULTRA PRECISION
+التحسينات:
+  P5: رفع وزن ML إلى 0.45 واستخدام predict_proba() مباشرة
+  P5: الخصم تلقائياً من الحساب إذا لم تتوفر أخبار
+  كل ميزات v9 محفوظة (الجلسة، السيطرة، RSI override، منع البيع ضد الاتجاه)
 """
 import logging
 from collections import deque
@@ -41,190 +36,112 @@ class TradingStrategy:
         self.price_history = deque(maxlen=500)
         self.execution_engine = AdvancedExecutionEngine()
 
-    def _rsi_signal(self, period: int = 14) -> tuple[str, float]:
-        """RSI باستخدام Wilder's Smoothing."""
+    def _rsi_signal(self, period: int = 14) -> tuple:
         import numpy as np
-
         prices = list(self.price_history)
         if len(prices) < period + 1:
             return "HOLD", 50.0
-
         p = np.array(prices[-(period + 1):], dtype=float)
         deltas = np.diff(p)
-        gains = np.where(deltas > 0, deltas, 0.0)
+        gains  = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
-
         gain = gains[:period].mean()
         loss = losses[:period].mean()
-
         for g, l in zip(gains[period:], losses[period:]):
             gain = (gain * (period - 1) + g) / period
             loss = (loss * (period - 1) + l) / period
-
-        rs = gain / (loss + 1e-10)
+        rs  = gain / (loss + 1e-10)
         rsi = float(100 - (100 / (1 + rs)))
-
-        if rsi < 35:
-            return "BUY", rsi
-        if rsi > 65:
-            return "SELL", rsi
+        if rsi < 35: return "BUY",  rsi
+        if rsi > 65: return "SELL", rsi
         return "HOLD", rsi
 
     def _safe_pct_change(self, old: float, new: float) -> float:
-        if old == 0:
-            return 0.0
-        return (new - old) / old
+        return 0.0 if old == 0 else (new - old) / old
 
-    def _ema_value(self, prices: list[float], period: int) -> float:
-        if not prices:
-            return 0.0
-
-        k = 2 / (period + 1)
-        ema = prices[0]
-
+    def _ema_value(self, prices: list, period: int) -> float:
+        if not prices: return 0.0
+        k, ema = 2 / (period + 1), prices[0]
         for price in prices[1:]:
             ema = (price * k) + (ema * (1 - k))
-
         return ema
 
     def _ma_trend(self) -> str:
         prices = list(self.price_history)
-        if len(prices) < 20:
-            return "NEUTRAL"
-
+        if len(prices) < 20: return "NEUTRAL"
         fast = sum(prices[-5:]) / 5
         slow = sum(prices[-20:]) / 20
-
-        if fast > slow * 1.002:
-            return "UP"
-        if fast < slow * 0.998:
-            return "DOWN"
+        if fast > slow * 1.002: return "UP"
+        if fast < slow * 0.998: return "DOWN"
         return "NEUTRAL"
 
-    def _execution_metrics(
-        self,
-        market_data: List[Dict],
-        security_id: str,
-        currency: str,
-    ) -> Dict:
+    def _execution_metrics(self, market_data: List[Dict], security_id: str, currency: str) -> Dict:
         prices = list(self.price_history)
-
         if len(prices) < 25:
-            return {
-                "ema_signal": "HOLD",
-                "momentum_signal": "HOLD",
-                "volume_signal": "HOLD",
-                "atr_pct": 0.0,
-                "ema_delta_pct": 0.0,
-                "momentum_pct": 0.0,
-                "imbalance": 0.0,
-            }
+            return {"ema_signal": "HOLD", "momentum_signal": "HOLD", "volume_signal": "HOLD",
+                    "atr_pct": 0.0, "ema_delta_pct": 0.0, "momentum_pct": 0.0, "imbalance": 0.0}
 
-        ema_fast = self._ema_value(prices[-12:], 9)
-        ema_slow = self._ema_value(prices[-25:], 21)
+        ema_fast      = self._ema_value(prices[-12:], 9)
+        ema_slow      = self._ema_value(prices[-25:], 21)
         ema_delta_pct = self._safe_pct_change(ema_slow, ema_fast)
 
-        if ema_delta_pct > 0.0008:
-            ema_signal = "BUY"
-        elif ema_delta_pct < -0.0008:
-            ema_signal = "SELL"
-        else:
-            ema_signal = "HOLD"
+        if   ema_delta_pct >  0.0008: ema_signal = "BUY"
+        elif ema_delta_pct < -0.0008: ema_signal = "SELL"
+        else:                          ema_signal = "HOLD"
 
-        momentum_pct = (
-            self._safe_pct_change(prices[-6], prices[-1])
-            if len(prices) >= 6
-            else 0.0
-        )
+        momentum_pct = self._safe_pct_change(prices[-6], prices[-1]) if len(prices) >= 6 else 0.0
+        if   momentum_pct >  0.0005: momentum_signal = "BUY"
+        elif momentum_pct < -0.0005: momentum_signal = "SELL"
+        else:                         momentum_signal = "HOLD"
 
-        if momentum_pct > 0.0005:
-            momentum_signal = "BUY"
-        elif momentum_pct < -0.0005:
-            momentum_signal = "SELL"
-        else:
-            momentum_signal = "HOLD"
-
-        recent = prices[-20:]
-        true_ranges = [
-            abs(recent[i] - recent[i - 1]) / recent[i - 1]
-            for i in range(1, len(recent))
-            if recent[i - 1] != 0
-        ]
+        recent      = prices[-20:]
+        true_ranges = [abs(recent[i] - recent[i-1]) / recent[i-1]
+                       for i in range(1, len(recent)) if recent[i-1] != 0]
         atr_pct = sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
 
-        bid_volume = 0.0
-        ask_volume = 0.0
-
-        # DEBUG: طباعة أول صفين من market_data لتشخيص Volume signal
-        if market_data:
-            import logging as _lg
-            _lg.getLogger(__name__).debug(f"VOLUME_DEBUG market_data[0]: {market_data[0]}")
-
+        bid_volume = ask_volume = 0.0
         for row in market_data or []:
             sid = str(row.get("securityId", row.get("security_id", "")))
             cur = str(row.get("currency", row.get("currencyId", "")))
-
-            if sid and security_id not in sid:
-                continue
-            if cur and currency not in cur:
-                continue
-
+            if sid and security_id not in sid: continue
+            if cur and currency not in cur: continue
             try:
-                side = str(row.get("type", row.get("action", row.get("side", "")))).upper()
-                qty = float(row.get("quantity", row.get("qty", row.get("amount", 0))) or 0)
-                price = float(row.get("price", 0) or 0)
-            except (TypeError, ValueError, AttributeError) as e:
-                logger.debug("Skipping unparseable market row: %s", e)
+                side   = str(row.get("type", row.get("action", row.get("side", "")))).upper()
+                qty    = float(row.get("quantity", row.get("qty", row.get("amount", 0))) or 0)
+                price  = float(row.get("price", 0) or 0)
+            except (TypeError, ValueError):
                 continue
-
             weight = qty * price if price > 0 else qty
+            if   "BID" in side or side == "B": bid_volume += weight
+            elif "ASK" in side or side == "S": ask_volume += weight
 
-            if "BID" in side or side == "B":
-                bid_volume += weight
-            elif "ASK" in side or side == "S":
-                ask_volume += weight
+        denom     = bid_volume + ask_volume
+        imbalance = (bid_volume - ask_volume) / denom if denom else 0.0
+        if   imbalance >  0.12: volume_signal = "BUY"
+        elif imbalance < -0.12: volume_signal = "SELL"
+        else:                    volume_signal = "HOLD"
 
-        denom = bid_volume + ask_volume
-        imbalance = ((bid_volume - ask_volume) / denom) if denom else 0.0
-
-        if imbalance > 0.12:
-            volume_signal = "BUY"
-        elif imbalance < -0.12:
-            volume_signal = "SELL"
-        else:
-            volume_signal = "HOLD"
-
-        return {
-            "ema_signal": ema_signal,
-            "momentum_signal": momentum_signal,
-            "volume_signal": volume_signal,
-            "atr_pct": atr_pct,
-            "ema_delta_pct": ema_delta_pct,
-            "momentum_pct": momentum_pct,
-            "imbalance": imbalance,
-        }
+        return {"ema_signal": ema_signal, "momentum_signal": momentum_signal,
+                "volume_signal": volume_signal, "atr_pct": atr_pct,
+                "ema_delta_pct": ema_delta_pct, "momentum_pct": momentum_pct, "imbalance": imbalance}
 
     def _weighted_confidence(self, signals: Dict[str, str], target: str) -> float:
+        # P5: ML ترتفع إلى 0.45
         weights = {
-            "ml": 0.30,
-            "ema": 0.20,
-            "momentum": 0.15,
-            "volume": 0.10,
-            "news": 0.03,
-            "rsi": 0.20,
-            "session": 0.02,
+            "ml":       0.45,
+            "rsi":      0.15,
+            "ema":      0.15,
+            "momentum": 0.12,
+            "volume":   0.08,
+            "session":  0.05,
+            "news":     0.00,  # يُضبط ديناميكياً
         }
-
-        score = 0.0
-        total = 0.0
-
+        score = total = 0.0
         for name, signal in signals.items():
-            weight = weights.get(name, 0.0)
-            total += weight
-
+            w = weights.get(name, 0.0)
+            total += w
             if signal == target:
-                score += weight
-
+                score += w
         return score / total if total else 0.0
 
     @staticmethod
@@ -245,29 +162,22 @@ class TradingStrategy:
 
         bid = best_bid(market_data, security_id, currency)
         ask = best_ask(market_data, security_id, currency)
-
         if bid is None or ask is None:
             return None
 
         control = self._control_state()
-
         if control.get("paused", False):
-            logger.info("CONTROL: bot paused by control_state.json")
+            logger.info("CONTROL: bot paused")
             return None
-
         if security_id == "AGXLN" and not control.get("silver_enabled", True):
-            logger.info("CONTROL: silver disabled by control_state.json")
+            logger.info("CONTROL: silver disabled")
             return None
-
         if security_id == "PDXLN" and not control.get("palladium_enabled", True):
-            logger.info("CONTROL: palladium disabled by control_state.json")
+            logger.info("CONTROL: palladium disabled")
             return None
 
         mid = (bid + ask) / 2
-
-        logger.info(
-            f"PRICE | bid={bid:.4f} ask={ask:.4f} mid={mid:.4f}"
-        )
+        logger.info(f"PRICE | bid={bid:.4f} ask={ask:.4f} mid={mid:.4f}")
 
         self.price_history.append(mid)
         self.predictor.add_price(mid)
@@ -277,30 +187,34 @@ class TradingStrategy:
             return None
 
         if not self.risk_manager.is_spread_acceptable(bid, ask):
-            logger.info(f"سبريد مرفوض: {(ask - bid) / bid:.2%}")
+            logger.info(f"سبريد مرفوض: {(ask-bid)/bid:.2%}")
             return None
 
+        # ── P5: استخراج predict_proba() لإحقان ثقة ML مباشرة ──
         ml_signal = self.predictor.predict_signal()
+        ml_proba  = {"HOLD": 0.33, "BUY": 0.33, "SELL": 0.33}
+        if hasattr(self.predictor, "predict_proba"):
+            try:
+                ml_proba = self.predictor.predict_proba()
+            except Exception:
+                pass
+
         rsi_signal, rsi_value = self._rsi_signal()
-        trend = self._ma_trend()
+        trend   = self._ma_trend()
         metrics = self._execution_metrics(market_data, security_id, currency)
 
-        news_signal = "HOLD"
+        news_signal    = "HOLD"
         _news_has_data = False
         if self.news_analyzer:
             try:
                 _raw_news = self.news_analyzer.get_signal(security_id)
-                if _raw_news == "NO_DATA":
-                    news_signal = "HOLD"
-                    _news_has_data = False
-                else:
-                    news_signal = _raw_news
+                if _raw_news != "NO_DATA":
+                    news_signal    = _raw_news
                     _news_has_data = True
             except Exception as exc:
                 logger.warning(f"News signal failed: {exc}")
 
         session = self.execution_engine.detect_session()
-
         if session in ("LONDON", "LONDON_NY_OVERLAP"):
             session_signal = "BUY" if trend == "UP" else "SELL" if trend == "DOWN" else "HOLD"
         elif session == "NEW_YORK":
@@ -309,31 +223,35 @@ class TradingStrategy:
             session_signal = "HOLD"
 
         signals = {
-            "ml": ml_signal,
-            "rsi": rsi_signal,
-            "ema": metrics["ema_signal"],
+            "ml":       ml_signal,
+            "rsi":      rsi_signal,
+            "ema":      metrics["ema_signal"],
             "momentum": metrics["momentum_signal"],
-            "volume": metrics["volume_signal"],
-            "news": news_signal,
-            "session": session_signal,
+            "volume":   metrics["volume_signal"],
+            "news":     news_signal,
+            "session":  session_signal,
         }
 
-        # T-05: إذا لم تُوجد أخبار، نحذف news من الحساب
         _signals_for_conf = dict(signals)
         if not _news_has_data:
             _signals_for_conf.pop("news", None)
-            logger.debug("News weight zeroed: NO_DATA")
-        buy_conf = self._weighted_confidence(_signals_for_conf, "BUY")
-        sell_conf = self._weighted_confidence(_signals_for_conf, "SELL")
 
-        # RSI override: oversold قصوى تُجبر تقييم BUY
-        # Guard: RSI=0 يعني downtrend حاد أو بيانات غير كافية — لا تُجبر BUY
+        # P5: تعزيز ثقة ML بالاحتمالية الفعلية من predict_proba
+        raw_buy_conf  = self._weighted_confidence(_signals_for_conf, "BUY")
+        raw_sell_conf = self._weighted_confidence(_signals_for_conf, "SELL")
+
+        # ادمج ML proba مباشرة: ML_WEIGHT=0.45 من الحساب + 0.30 من ml_proba
+        ML_BOOST = 0.30
+        buy_conf  = raw_buy_conf  * (1 - ML_BOOST) + ml_proba.get("BUY",  0.0) * ML_BOOST
+        sell_conf = raw_sell_conf * (1 - ML_BOOST) + ml_proba.get("SELL", 0.0) * ML_BOOST
+
+        # RSI extreme overrides
         if rsi_value < 15 and rsi_value > 0.5:
             buy_conf = max(buy_conf, self.risk_manager.config.confidence_threshold + 0.05)
-            logger.info(f"RSI OVERRIDE: rsi={rsi_value:.1f} → forcing buy_conf={buy_conf:.0%}")
+            logger.info(f"RSI OVERRIDE: rsi={rsi_value:.1f} → buy_conf={buy_conf:.0%}")
         elif rsi_value > 85:
             sell_conf = max(sell_conf, self.risk_manager.config.confidence_threshold + 0.05)
-            logger.info(f"RSI OVERRIDE: rsi={rsi_value:.1f} → forcing sell_conf={sell_conf:.0%}")
+            logger.info(f"RSI OVERRIDE: rsi={rsi_value:.1f} → sell_conf={sell_conf:.0%}")
 
         base_threshold = self.risk_manager.config.confidence_threshold
 
@@ -350,7 +268,6 @@ class TradingStrategy:
 
         threshold = decision.threshold
 
-        # منع الشراء ضد الاتجاه الأكبر
         if (
             decision.action == "BUY"
             and metrics["ema_signal"] == "SELL"
@@ -360,66 +277,47 @@ class TradingStrategy:
             return None
 
         if decision.action == "BUY" and not control.get("allow_buy", True):
-            logger.info("CONTROL: BUY blocked by control_state.json")
+            logger.info("CONTROL: BUY blocked")
             return None
 
         if decision.action == "BUY":
-            action = "BUY"
+            action     = "BUY"
             confidence = buy_conf
-            price = ask
+            price      = ask
 
         elif decision.action == "SELL" and not control.get("allow_sell", True):
-            logger.info("CONTROL: SELL blocked by control_state.json")
+            logger.info("CONTROL: SELL blocked")
             return None
 
         elif decision.action == "SELL" and decision.allow_new_position:
-            # BullionVault لا يدعم البيع على المكشوف — نسجل الإشارة فقط ولا نفتح مركزاً
             logger.info(
-                f"Signal SELL (no short) | confidence={sell_conf:.0%} | "
-                f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} | {decision.reason}"
+                f"Signal SELL (no short) | conf={sell_conf:.0%} | "
+                f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} ML_proba={ml_proba}"
             )
             return None
 
         elif decision.action == "SELL" and not decision.allow_new_position:
             logger.info(
-                f"Signal SELL | confidence={sell_conf:.0%} | "
-                f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} | "
-                f"{decision.reason} | "
-                f"ML={ml_signal} RSI={rsi_signal}({rsi_value:.1f}) "
-                f"EMA={metrics['ema_signal']}({metrics['ema_delta_pct']:+.2%}) "
-                f"MOM={metrics['momentum_signal']}({metrics['momentum_pct']:+.2%}) "
-                f"VOL={metrics['volume_signal']}({metrics['imbalance']:+.0%}) "
-                f"ATR={metrics['atr_pct']:.2%} News={news_signal}"
+                f"Signal SELL | conf={sell_conf:.0%} | "
+                f"ML={ml_signal}({ml_proba}) RSI={rsi_signal}({rsi_value:.1f}) "
+                f"EMA={metrics['ema_signal']} MOM={metrics['momentum_signal']}"
             )
             return None
 
         else:
             usd = self._usd_available(balance)
-
             logger.info(
-                f"No signal | "
-                f"ML={ml_signal} "
-                f"RSI={rsi_signal} "
-                f"EMA={metrics['ema_signal']} "
-                f"MOM={metrics['momentum_signal']} "
-                f"VOL={metrics['volume_signal']} "
-                f"News={news_signal} "
-                f"Regime={decision.regime} "
-                f"Session={decision.session} "
-                f"MTF={decision.mtf_bias} | "
-                f"RSI={rsi_value:.1f} "
-                f"ATR={metrics['atr_pct']:.3%} "
-                f"Imb={metrics['imbalance']:+.1%} "
-                f"EMAΔ={metrics['ema_delta_pct']:+.3%} "
-                f"MOM5={metrics['momentum_pct']:+.3%} | "
-                f"BUY={buy_conf:.0%} "
-                f"SELL={sell_conf:.0%} "
-                f"(need>={threshold:.0%}) | "
+                f"No signal | ML={ml_signal} RSI={rsi_signal} EMA={metrics['ema_signal']} "
+                f"MOM={metrics['momentum_signal']} VOL={metrics['volume_signal']} "
+                f"Regime={decision.regime} Session={decision.session} MTF={decision.mtf_bias} | "
+                f"RSI={rsi_value:.1f} ATR={metrics['atr_pct']:.3%} "
+                f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} (need>={threshold:.0%}) | "
+                f"ML_BUY={ml_proba.get('BUY',0):.0%} ML_SELL={ml_proba.get('SELL',0):.0%} | "
                 f"USD=${usd:.2f}"
             )
             return None
 
-        usd_balance = self._usd_available(balance)
+        usd_balance    = self._usd_available(balance)
         open_positions = len(self.risk_manager.open_trades)
 
         can_trade, reason = self.risk_manager.can_trade(usd_balance, open_positions)
@@ -428,24 +326,21 @@ class TradingStrategy:
             return None
 
         bv_action = "B" if action == "BUY" else "S"
-
-        quantity = self.risk_manager.calculate_quantity(
-            usd_balance,
-            price,
+        quantity  = self.risk_manager.calculate_quantity(
+            usd_balance, price,
             override_risk_pct=decision.position_risk_pct,
         )
 
         if quantity <= 0:
-            logger.info("Trade blocked: calculated quantity is zero.")
+            logger.info("Trade blocked: quantity is zero.")
             return None
 
         take_profit = self.risk_manager.calculate_take_profit(bv_action, price)
 
         logger.info(
-            f"Signal {action} | confidence={confidence:.0%} | "
-            f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} | "
-            f"{decision.reason} | "
-            f"ML={ml_signal} RSI={rsi_signal}({rsi_value:.1f}) "
+            f"Signal {action} | conf={confidence:.0%} | "
+            f"BUY={buy_conf:.0%} SELL={sell_conf:.0%} | {decision.reason} | "
+            f"ML={ml_signal}({ml_proba}) RSI={rsi_signal}({rsi_value:.1f}) "
             f"EMA={metrics['ema_signal']}({metrics['ema_delta_pct']:+.2%}) "
             f"MOM={metrics['momentum_signal']}({metrics['momentum_pct']:+.2%}) "
             f"VOL={metrics['volume_signal']}({metrics['imbalance']:+.0%}) "
@@ -458,7 +353,8 @@ class TradingStrategy:
             currency=currency,
             confidence=confidence,
             reason=(
-                f"ML={ml_signal}, RSI={rsi_signal}, EMA={metrics['ema_signal']}, "
+                f"ML={ml_signal}({ml_proba.get('BUY',0):.0%}B/{ml_proba.get('SELL',0):.0%}S), "
+                f"RSI={rsi_signal}, EMA={metrics['ema_signal']}, "
                 f"MOM={metrics['momentum_signal']}, VOL={metrics['volume_signal']}, "
                 f"News={news_signal}, {decision.reason}"
             ),
