@@ -1,9 +1,10 @@
 """
-historical_trainer.py v2
-التغييرات:
-  - يستورد FeatureEngineer من ml_predictor.py بدلاً من تعريف features خاصة به
-  - LOOKBACK=48 موحَّد مع EnsemblePredictor — يُنهي مشكلة C-01
-  - نفس build_dataset الدقيقة المستخدمة في _train الحي
+historical_trainer.py v3 — ULTRA PRECISION
+التحسينات:
+  P1: تدريب تصنيف (BUY/SELL/HOLD) بدلاً من regression
+  P3: Stacking: XGB + LGBM + RF + GB مع LogisticRegression meta-learner
+  P6: Walk-Forward تحقق بدلاً من random shuffle
+  P2: 60+ features من FeatureEngineer v8
 شغّله بعد data_fetcher.py: python historical_trainer.py
 """
 import os
@@ -15,113 +16,117 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(message)s"
 )
-logger = logging.getLogger("Trainer")
+logger = logging.getLogger("Trainer-v3")
 
 DATA_DIR   = "data"
 MODELS_DIR = "models"
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 try:
-    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, VotingRegressor
-    from sklearn.preprocessing import MinMaxScaler
-    from sklearn.metrics import mean_squared_error
-    from sklearn.model_selection import train_test_split
-    import xgboost as xgb
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import accuracy_score, classification_report
     SKLEARN_OK = True
 except ImportError:
-    logger.error("شغّل: pip install scikit-learn xgboost")
+    logger.error("شغّل: pip install scikit-learn xgboost lightgbm")
     SKLEARN_OK = False
 
-# ← استيراد FeatureEngineer الموحَّد بدلاً من تعريف build_features محلياً
-from ml_predictor import FeatureEngineer, EnsemblePredictor
+from ml_predictor import (
+    FeatureEngineer,
+    EnsemblePredictor,
+    _build_classifier,
+    _make_labels,
+)
 from data_fetcher import load_prices
 
-LOOKBACK = EnsemblePredictor.LOOKBACK   # 48 — مُزامَن تلقائياً
+LOOKBACK = EnsemblePredictor.LOOKBACK  # 48
 
 
 def build_dataset(prices: np.ndarray):
-    """نفس الخوارزمية المستخدمة في EnsemblePredictor._train."""
-    X, y = [], []
+    """
+    بناء dataset تصنيف.
+    X: 60+ features لكل سعر
+    y: label للسعر التالي (0=HOLD, 1=BUY, 2=SELL)
+    """
+    X, raw_prices = [], []
     for i in range(LOOKBACK, len(prices) - 1):
-        # LOOKBACK+1 سعراً = 49 = نفس ما يُمرَّر في predict_signal
         feats = FeatureEngineer.compute(prices[i - LOOKBACK: i + 1])
         if feats is not None:
             X.append(feats)
-            y.append(prices[i + 1])
-    return np.array(X), np.array(y)
+            raw_prices.append(prices[i + 1])
 
+    if not X:
+        return np.array([]), np.array([])
 
-def build_model():
-    # نفس بنية EnsemblePredictor._build_model تماماً حتى لا يختلف التدريب التاريخي عن الحي.
-    return VotingRegressor([
-        ("xgb", xgb.XGBRegressor(
-            n_estimators=300, learning_rate=0.04, max_depth=6,
-            subsample=0.8, colsample_bytree=0.8,
-            objective="reg:squarederror", n_jobs=-1, verbosity=0,
-        )),
-        ("rf", RandomForestRegressor(
-            n_estimators=200, max_depth=9, min_samples_leaf=3,
-            n_jobs=-1, random_state=42,
-        )),
-        ("gb", GradientBoostingRegressor(
-            n_estimators=200, learning_rate=0.04, max_depth=5,
-            subsample=0.8, random_state=42,
-        )),
-    ])
+    X = np.array(X)
+    raw_arr = np.array(raw_prices + [raw_prices[-1]])
+    # خذ labels للسعر i+1 (اتجاه الحركة التالية)
+    y = _make_labels(raw_arr)[:-1]
+    return X, y
 
 
 def train_metal(security_id: str):
-    logger.info(f"{'='*50}")
-    logger.info(f"  {security_id}")
+    logger.info(f"{'='*55}")
+    logger.info(f"  تدريب: {security_id}")
 
-    # أولوية: ساعية ← يومية
+    # أولوية: ساعية → يومية
     prices = load_prices(security_id, "hourly")
     source = "ساعية"
-    if prices is None or len(prices) < LOOKBACK + 50:
+    if prices is None or len(prices) < LOOKBACK + 100:
         prices = load_prices(security_id, "daily")
         source = "يومية"
 
-    if prices is None or len(prices) < LOOKBACK + 50:
+    if prices is None or len(prices) < LOOKBACK + 100:
         logger.warning(f"  لا بيانات كافية لـ {security_id}")
         return
 
-    logger.info(f"  مصدر: {source} | {len(prices):,} عينة")
+    logger.info(f"  مصدر: {source} | {len(prices):,} نقطة")
 
     X, y = build_dataset(prices)
-    if len(X) < 50:
+    if len(X) < 100:
         logger.warning(f"  عينات غير كافية: {len(X)}")
         return
 
-    logger.info(f"  عينات التدريب: {len(X):,}")
+    logger.info(f"  عينات: {len(X):,} | features: {X.shape[1]}")
+    unique, counts = np.unique(y, return_counts=True)
+    label_names = {0: "HOLD", 1: "BUY", 2: "SELL"}
+    for lbl, cnt in zip(unique, counts):
+        logger.info(f"    {label_names.get(lbl, lbl)}: {cnt} ({cnt/len(y):.1%})")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.15, shuffle=False
-    )
+    # P6: Walk-Forward (75/25, بدون shuffle)
+    split_idx = int(len(X) * 0.75)
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
 
-    scaler   = MinMaxScaler()
-    y_scaled = scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    # StandardScaler
+    scaler    = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s  = scaler.transform(X_test)
 
-    logger.info("  جاري التدريب...")
-    model = build_model()
-    model.fit(X_train, y_scaled)
+    logger.info("  جاري بناء Stacking Classifier (XGB+LGBM+RF+GB)...")
+    model = _build_classifier()
+    model.fit(X_train_s, y_train)
 
-    # تقييم
-    p_train = scaler.inverse_transform(model.predict(X_train).reshape(-1, 1)).ravel()
-    p_test  = scaler.inverse_transform(model.predict(X_test).reshape(-1, 1)).ravel()
+    y_pred_train = model.predict(X_train_s)
+    y_pred_test  = model.predict(X_test_s)
 
-    rmse_train = np.sqrt(mean_squared_error(y_train, p_train))
-    rmse_test  = np.sqrt(mean_squared_error(y_test,  p_test))
-    mae_pct    = np.mean(np.abs(y_test - p_test)) / np.mean(y_test) * 100
+    acc_train = accuracy_score(y_train, y_pred_train)
+    acc_test  = accuracy_score(y_test,  y_pred_test)
 
-    logger.info(f"  RMSE تدريب:  {rmse_train:.4f}")
-    logger.info(f"  RMSE اختبار: {rmse_test:.4f}")
-    logger.info(f"  خطأ نسبي:   {mae_pct:.3f}%")
+    logger.info(f"  ✅ Train Accuracy : {acc_train:.1%}")
+    logger.info(f"  ✅ Test  Accuracy : {acc_test:.1%}")
+    logger.info("```")
+    logger.info(classification_report(
+        y_test, y_pred_test,
+        target_names=["HOLD", "BUY", "SELL"],
+        zero_division=0
+    ))
+    logger.info("```")
 
     # حفظ
-    with open(os.path.join(MODELS_DIR, f"{security_id}_model.pkl"),  "wb") as f:
-        pickle.dump(model,  f)
-    with open(os.path.join(MODELS_DIR, f"{security_id}_scaler.pkl"), "wb") as f:
-        pickle.dump(scaler, f)
+    model_path  = os.path.join(MODELS_DIR, f"{security_id}_model.pkl")
+    scaler_path = os.path.join(MODELS_DIR, f"{security_id}_scaler.pkl")
+    with open(model_path,  "wb") as f: pickle.dump(model,  f)
+    with open(scaler_path, "wb") as f: pickle.dump(scaler, f)
 
     logger.info(f"  ✅ محفوظ في models/{security_id}_model.pkl")
 
@@ -130,21 +135,24 @@ if __name__ == "__main__":
     if not SKLEARN_OK:
         exit(1)
 
-    metals  = ["AUXLN", "AGXLN", "PTXLN", "PDXLN"]
+    metals  = ["AUXLN", "AGXLN", "PTXLN", "PDXLN")
     trained = 0
     for sid in metals:
         daily  = os.path.exists(os.path.join(DATA_DIR, f"{sid}_daily.pkl"))
         hourly = os.path.exists(os.path.join(DATA_DIR, f"{sid}_hourly.pkl"))
         if daily or hourly:
-            train_metal(sid)
-            trained += 1
+            try:
+                train_metal(sid)
+                trained += 1
+            except Exception as e:
+                logger.error(f"خطأ في تدريب {sid}: {e}", exc_info=True)
         else:
             logger.warning(f"لا توجد بيانات لـ {sid} — شغّل data_fetcher.py أولاً")
 
-    logger.info("=" * 50)
+    logger.info("=" * 55)
     if trained > 0:
         logger.info(f"  ✅ اكتمل تدريب {trained} نموذج")
         logger.info("  الخطوة التالية: python run_all_bots.py")
     else:
         logger.info("  ❌ لم يُدرَّب أي نموذج — شغّل data_fetcher.py أولاً")
-    logger.info("=" * 50)
+    logger.info("=" * 55)
