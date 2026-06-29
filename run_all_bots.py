@@ -1,6 +1,14 @@
 """
-Run all metal bots as separate processes — Guardian v7
-إصلاح L-03: لا طباعة لاسم المستخدم في stdout
+Run Guardian metal bots as separate processes.
+
+Risk note:
+- By default, only SILVER is started for real trading because it is the most
+  practical metal for small balances and usually has better tradability.
+- Use ENABLED_BOTS in Railway Variables to choose the active metals.
+  Examples:
+    ENABLED_BOTS=SILVER
+    ENABLED_BOTS=SILVER,PLATINUM
+    ENABLED_BOTS=ALL
 """
 import subprocess
 import sys
@@ -12,35 +20,18 @@ from pathlib import Path
 BASE_DIR   = Path(__file__).resolve().parent
 PYTHON_BIN = sys.executable
 
-# ─── حالة المعادن ──────────────────────────────────────────────────────────
-#
-#  SILVER    ✅ مفعَّل   — AGXLN | bot_silver.py
-#  PALLADIUM ✅ مفعَّل   — PDXLN | bot_palladium.py
-#
-#  GOLD      ⏸ معطَّل   — سبب التعطيل:
-#              BullionVault يشترط حد أدنى من رأس المال لتداول الذهب (AUXLN)
-#              وهذا الرصيد غير متوفر حالياً في الحساب.
-#              لتفعيله: تأكد من وجود رصيد USD كافٍ ثم أزل تعليق السطر أدناه.
-#
-#  PLATINUM  ⏸ معطَّل   — سبب التعطيل:
-#              سيولة منخفضة في سوق البلاتين (PTXLN) على BullionVault
-#              خلال ساعات التداول الحالية، مما يؤدي إلى رفض معظم الأوامر.
-#              لتفعيله: راقب السيولة أولاً ثم أزل تعليق السطر أدناه.
-#
-# ───────────────────────────────────────────────────────────────────────────
 BOTS = {
-    "GOLD":     "bot_gold.py",      # ⏸ معطَّل — رأس مال غير كافٍ
-    "PLATINUM": "bot_platinum.py",  # ⏸ معطَّل — سيولة منخفضة
+    "GOLD":     "bot_gold.py",
+    "PLATINUM": "bot_platinum.py",
     "SILVER":    "bot_silver.py",
     "PALLADIUM": "bot_palladium.py",
 }
 
-# خدمات مستقلة تعمل كعمليات منفصلة.
-# نستخدم المشغّل الآمن بدلاً من telegram_control_v4.py مباشرة حتى تكون
-# الصلاحيات والمسارات متوافقة مع Railway وبدون أسرار داخل Git.
 SERVICES = {
     "TELEGRAM_CMD": "telegram_control_v4_secure.py",
 }
+
+DEFAULT_ENABLED_BOTS = "SILVER"
 
 
 def load_env(path: Path):
@@ -67,6 +58,28 @@ def check_credentials():
     print("[ENV] BullionVault credentials loaded.")
 
 
+def _parse_enabled_bots() -> dict:
+    raw = os.environ.get("ENABLED_BOTS", DEFAULT_ENABLED_BOTS).strip()
+    if not raw:
+        raw = DEFAULT_ENABLED_BOTS
+
+    wanted = [x.strip().upper() for x in raw.replace(";", ",").split(",") if x.strip()]
+    if "ALL" in wanted:
+        selected = dict(BOTS)
+    else:
+        selected = {name: BOTS[name] for name in wanted if name in BOTS}
+        unknown = [name for name in wanted if name not in BOTS]
+        for name in unknown:
+            print(f"[CONFIG] Unknown bot in ENABLED_BOTS ignored: {name}")
+
+    if not selected:
+        print("[CONFIG] No valid trading bots selected. Falling back to SILVER only.")
+        selected = {"SILVER": BOTS["SILVER"]}
+
+    print("[CONFIG] Enabled trading bots: " + ", ".join(selected.keys()))
+    return selected
+
+
 def start_bot(name: str, filename: str):
     path = BASE_DIR / filename
     if not path.exists():
@@ -85,8 +98,11 @@ def main():
     check_credentials()
 
     processes = {}
-    all_procs = {**BOTS, **SERVICES}
+    active_bots = _parse_enabled_bots()
+    all_procs = {**active_bots, **SERVICES}
     restart_counts = {name: 0 for name in all_procs}
+    max_restarts = int(os.environ.get("MAX_PROCESS_RESTARTS", "12"))
+
     for name, file in all_procs.items():
         proc = start_bot(name, file)
         if proc:
@@ -97,7 +113,7 @@ def main():
         print("No bots started.")
         sys.exit(1)
 
-    print(f"\n{len(processes)} bot(s) running. Press Ctrl+C to stop all.\n")
+    print(f"\n{len(processes)} process(es) running. Press Ctrl+C to stop all.\n")
 
     def shutdown(sig, frame):
         print("\nStopping all bots...")
@@ -115,13 +131,18 @@ def main():
     signal.signal(signal.SIGINT,  shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    restart_after = {}  # metal -> timestamp موعد إعادة التشغيل
+    restart_after = {}
 
     while True:
         now = time.time()
         for name, proc in list(processes.items()):
             ret = proc.poll()
             if ret is not None:
+                if restart_counts.get(name, 0) >= max_restarts:
+                    print(f"[{name}] Exited with code {ret}. Restart limit reached; not restarting.")
+                    processes.pop(name, None)
+                    continue
+
                 if name not in restart_after:
                     restart_counts[name] = restart_counts.get(name, 0) + 1
                     wait = min(300, 10 * restart_counts[name])
@@ -129,7 +150,10 @@ def main():
                     restart_after[name] = now + wait
                 elif now >= restart_after[name]:
                     del restart_after[name]
-                    all_procs_map = {**BOTS, **SERVICES}
+                    all_procs_map = {**active_bots, **SERVICES}
+                    if name not in all_procs_map:
+                        processes.pop(name, None)
+                        continue
                     new_proc = start_bot(name, all_procs_map[name])
                     if new_proc:
                         processes[name] = new_proc
