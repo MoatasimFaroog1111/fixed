@@ -22,6 +22,14 @@ from telegram_controller import TelegramController
 from monitoring import write_heartbeat
 from state_manager import StateManager
 from daily_reporter import DailyReporter
+from shared_utils import (
+    read_control_state,
+    save_control_state,
+    extract_usd_available,
+    append_json_log,
+    append_jsonl,
+    setup_logger,
+)
 
 logger_init = logging.getLogger(__name__)
 
@@ -54,62 +62,33 @@ TRADE_MEMORY_FILE = "trade_history.jsonl"
 
 
 def log_trade_memory(event: dict):
-    try:
-        event["logged_at"] = datetime.utcnow().isoformat()
-        with open(TRADE_MEMORY_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logging.getLogger(__name__).warning("Trade memory log failed: %s", e)
+    append_jsonl(TRADE_MEMORY_FILE, event)
 
 
 # ── Price Log ─────────────────────────────────────────────────────
 def log_price_history(security_id: str, price: float, max_len: int = 200):
     """يحفظ آخر 200 سعر في ملف JSON لكل معدن."""
-    import json
-    path = f"/home/moatasim/fixed/price_log_{security_id}.json"
-    try:
-        import os
-        data = []
-        if os.path.exists(path):
-            with open(path) as f:
-                data = json.load(f)
-        data.append({"price": price, "ts": datetime.utcnow().isoformat()})
-        data = data[-max_len:]
-        with open(path, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logging.getLogger(__name__).debug("Price history log failed for %s: %s", security_id, e)
+    path = f"price_log_{security_id}.json"
+    append_json_log(path, {"price": price, "ts": datetime.utcnow().isoformat()}, max_entries=max_len)
 
 # ── Trade Log ──────────────────────────────────────────────────────
 def log_closed_trade(trade, exit_price: float, reason: str):
     """يسجل الصفقة المغلقة في trade_log.json."""
-    import json, os
-    path = "/home/moatasim/fixed/trade_log.json"
-    try:
-        data = []
-        if os.path.exists(path):
-            with open(path) as f:
-                data = json.load(f)
-        pnl = (exit_price - trade.entry_price) * trade.quantity
-        pnl_pct = (exit_price - trade.entry_price) / trade.entry_price * 100
-        data.append({
-            "symbol":      trade.security_id,
-            "action":      trade.action,
-            "quantity":    trade.quantity,
-            "entry_price": trade.entry_price,
-            "exit_price":  exit_price,
-            "peak_price":  trade.peak_price,
-            "pnl":         round(pnl, 4),
-            "pnl_pct":     round(pnl_pct, 4),
-            "reason":      reason,
-            "timestamp":   datetime.utcnow().isoformat(),
-            "dca_count":   trade.dca_count,
-        })
-        data = data[-500:]  # آخر 500 صفقة
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Closed trade log failed: %s", e)
+    pnl = (exit_price - trade.entry_price) * trade.quantity
+    pnl_pct = (exit_price - trade.entry_price) / trade.entry_price * 100
+    append_json_log("trade_log.json", {
+        "symbol":      trade.security_id,
+        "action":      trade.action,
+        "quantity":    trade.quantity,
+        "entry_price": trade.entry_price,
+        "exit_price":  exit_price,
+        "peak_price":  trade.peak_price,
+        "pnl":         round(pnl, 4),
+        "pnl_pct":     round(pnl_pct, 4),
+        "reason":      reason,
+        "timestamp":   datetime.utcnow().isoformat(),
+        "dca_count":   trade.dca_count,
+    }, max_entries=500)
 
 MIN_DAILY_PROFIT_TARGET_USD = 100
 PROFIT_LOCK_USD = 70
@@ -118,29 +97,7 @@ ADDONS_AVAILABLE = True
 
 
 def _setup_logging(bot_name, log_file):
-    logger = logging.getLogger(bot_name)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-
-    if logger.handlers:
-        return logger
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
-    stream_handler.setFormatter(formatter)
-
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
-
-    return logger
+    return setup_logger(bot_name, log_file)
 
 
 
@@ -417,28 +374,10 @@ class BaseMetalBot:
     # ── مراقبة المراكز المفتوحة ───────────────────────────────────
 
     def _control_state(self) -> dict:
-        path = Path("/home/moatasim/fixed/control_state.json")
-        default = {
-            "paused": False,
-            "allow_buy": True,
-            "allow_sell": True,
-            "silver_enabled": True,
-            "palladium_enabled": True,
-            "stop_loss_enabled": True,
-            "emergency_close_all": False,
-            "paused_after_close_all": True,
-        }
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                default.update(data)
-        except Exception as exc:
-            self.logger.warning(f"control_state read failed: {exc}")
-        return default
+        return read_control_state(logger=self.logger)
 
     def _save_control_state(self, state: dict):
-        path = Path("/home/moatasim/fixed/control_state.json")
-        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        save_control_state(state)
 
     def _monitor_positions(self, market_data, balance: dict):
         control = self._control_state()
@@ -493,8 +432,7 @@ class BaseMetalBot:
 
             return
 
-        _raw = balance.get("USD", 0)
-        usd = _raw.get("available", 0) if isinstance(_raw, dict) else float(_raw or 0)
+        usd = extract_usd_available(balance)
         for order_id, trade in list(self.risk.open_trades.items()):
             current = (best_bid if trade.action == "B" else best_ask)(
                 market_data, trade.security_id, trade.currency
@@ -561,8 +499,7 @@ class BaseMetalBot:
                         and current <= dca_trigger and usd > 100):
                     self._execute_dca(trade, current, usd)
                     _bal = self._fetch_balance()
-                    _raw2 = _bal.get("USD", 0)
-                    usd = _raw2.get("available", 0) if isinstance(_raw2, dict) else float(_raw2 or 0)
+                    usd = extract_usd_available(_bal)
 
                 trail_info = (f" | trail@{trail_price:,.0f}"
                               if trade.peak_price >= min_for_trail else "")
@@ -780,8 +717,7 @@ class BaseMetalBot:
         إصلاح H-02: يستخدم sig.quantity بدلاً من إعادة الحساب.
         يُنفِّذ BUY فقط (SELL يُصفَّى في run() قبل الوصول هنا).
         """
-        _b = balance.get("USD", 0)
-        usd_balance = _b.get("available", 0) if isinstance(_b, dict) else float(_b or 0)
+        usd_balance = extract_usd_available(balance)
         # تطبيق مضاعف التعويض إذا كان موجوداً
         _adj, _mult, _ = self._daily_target_adjustments()
         quantity = round(sig.quantity * _mult, 3)
@@ -979,8 +915,7 @@ class BaseMetalBot:
                     self.logger.debug("Price logging failed: %s", e)
 
                 balance = self._fetch_balance()
-                _raw = balance.get("USD", 0)
-                usd = _raw.get("available", 0) if isinstance(_raw, dict) else float(_raw or 0)
+                usd = extract_usd_available(balance)
 
                 # مراقبة المراكز الموجودة دائماً — حتى خارج ساعات التداول
                 self._monitor_positions(market_data, balance)

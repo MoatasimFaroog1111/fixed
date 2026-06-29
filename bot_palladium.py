@@ -2,16 +2,8 @@
 Palladium Trading Bot — Guardian v7
 DRY_RUN = False  ✅  (PRODUCTION MODE)
 """
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from dotenv import load_dotenv
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-
 from base_bot import BaseMetalBot
+from shared_utils import launch_bot
 
 
 class PalladiumBot(BaseMetalBot):
@@ -61,9 +53,4 @@ class PalladiumBot(BaseMetalBot):
 
 
 if __name__ == "__main__":
-    username = os.environ.get("BV_USERNAME", "")
-    password = os.environ.get("BV_PASSWORD", "")
-    if not username or not password:
-        print("ERROR: BV_USERNAME / BV_PASSWORD not set.")
-        sys.exit(1)
-    PalladiumBot(username, password).run()
+    launch_bot(PalladiumBot)

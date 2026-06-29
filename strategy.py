@@ -11,13 +11,12 @@ Trading Strategy v9 FIXED
   PRICE | bid=... ask=... mid=...
 """
 import logging
-import json
-from pathlib import Path
 from collections import deque
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 
 from advanced_execution import AdvancedExecutionEngine
+from shared_utils import read_control_state, extract_usd_available, calculate_rsi_wilder
 
 logger = logging.getLogger(__name__)
 
@@ -230,37 +229,10 @@ class TradingStrategy:
 
     @staticmethod
     def _usd_available(balance: dict) -> float:
-        for key in ("USD", "usd"):
-            if key in balance:
-                return float(balance[key].get("available", 0))
-
-        for value in balance.values():
-            if isinstance(value, dict) and value.get("class", "").upper() in ("CASH", "CURRENCY"):
-                return float(value.get("available", 0))
-
-        return 0.0
+        return extract_usd_available(balance)
 
     def _control_state(self) -> dict:
-        path = Path("/home/moatasim/fixed/control_state.json")
-        default = {
-            "paused": False,
-            "allow_buy": True,
-            "allow_sell": True,
-            "silver_enabled": True,
-            "palladium_enabled": True,
-            "stop_loss_enabled": True,
-        }
-
-        try:
-            if not path.exists():
-                return default
-
-            data = json.loads(path.read_text(encoding="utf-8"))
-            default.update(data)
-            return default
-        except Exception as exc:
-            logger.warning(f"control_state read failed: {exc}")
-            return default
+        return read_control_state(logger=logger)
 
     def evaluate(
         self,

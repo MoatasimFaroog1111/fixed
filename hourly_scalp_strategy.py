@@ -8,6 +8,8 @@ spread cost, and daily over-trading limits.
 from dataclasses import dataclass
 from typing import Literal, Optional, Sequence
 
+from shared_utils import calculate_rsi as _shared_calculate_rsi
+
 Action = Literal["BUY", "SELL", "HOLD"]
 
 
@@ -160,21 +162,5 @@ class HourlyScalpStrategy:
 
 
 def calculate_rsi(prices: Sequence[float], period: int = 14) -> float:
-    clean_prices = [float(p) for p in prices if p and float(p) > 0]
-    if len(clean_prices) < period + 1:
-        return 50.0
-
-    gains = []
-    losses = []
-    relevant = clean_prices[-(period + 1):]
-    for prev, curr in zip(relevant, relevant[1:]):
-        change = curr - prev
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
-
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    """Delegates to shared_utils.calculate_rsi."""
+    return _shared_calculate_rsi(prices, period)
