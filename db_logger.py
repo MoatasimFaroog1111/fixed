@@ -1,6 +1,9 @@
+import logging
 from contextlib import contextmanager
 from datetime import datetime
 from database import SessionLocal, TradeLog, BotStatus
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -33,7 +36,7 @@ def log_trade(symbol, side, quantity, price, status, bot_name):
             db.flush()
             return row.id
     except Exception as e:
-        print(f"DB log_trade error: {e}")
+        logger.error("DB log_trade error: %s", e)
         return None
 
 
@@ -50,5 +53,5 @@ def update_bot_status(bot_name, status, message=""):
             db.flush()
             return row.id
     except Exception as e:
-        print(f"DB update_bot_status error: {e}")
+        logger.error("DB update_bot_status error: %s", e)
         return None

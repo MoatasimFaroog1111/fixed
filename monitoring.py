@@ -1,9 +1,12 @@
 import os
 import time
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from db_logger import update_bot_status
+
+logger = logging.getLogger(__name__)
 
 RUNTIME_DIR = Path("runtime")
 HEARTBEAT_FILE = RUNTIME_DIR / "heartbeat.json"
@@ -25,8 +28,8 @@ def write_heartbeat(bot_name="GuardianBot", status="RUNNING", message=""):
 
     try:
         update_bot_status(bot_name, status, message)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Heartbeat DB status update failed: %s", e)
 
     return data
 
@@ -36,7 +39,8 @@ def read_heartbeat():
         return None
     try:
         return json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to read heartbeat file: %s", e)
         return None
 
 

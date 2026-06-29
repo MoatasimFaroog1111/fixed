@@ -31,17 +31,20 @@ from shared_utils import (
     setup_logger,
 )
 
+logger_init = logging.getLogger(__name__)
+
 try:
     from db_logger import log_trade, update_bot_status
     DB_LOGGING_AVAILABLE = True
 except Exception as e:
-    print(f"DB logger disabled: {e}")
+    logger_init.warning("DB logger disabled: %s", e)
     DB_LOGGING_AVAILABLE = False
 
 try:
     from news_analyzer import NewsAnalyzer
     NEWS_AVAILABLE = True
-except Exception:
+except Exception as e:
+    logger_init.warning("NewsAnalyzer unavailable: %s", e)
     NEWS_AVAILABLE = False
 
 
@@ -245,8 +248,8 @@ class BaseMetalBot:
             if self.state_mgr:
                 summary = self.state_mgr.data.get("daily", {})
                 return summary.get(yesterday, {}).get("pnl", 0.0)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning("Failed to get yesterday PnL: %s", e)
         return 0.0
 
     def _daily_target_adjustments(self) -> tuple:
@@ -671,7 +674,8 @@ class BaseMetalBot:
         stats = self.risk.get_stats()
         try:
             trend = self.strategy._ma_trend()
-        except Exception:
+        except Exception as e:
+            self.logger.warning("MA trend calculation failed, defaulting to NEUTRAL: %s", e)
             trend = "NEUTRAL"
 
         scalp = self.hourly_strategy.evaluate_from_prices(
@@ -907,8 +911,8 @@ class BaseMetalBot:
                     _ask = _pa(market_data, self.SECURITY_ID, self.CURRENCY)
                     if _bid and _ask:
                         log_price_history(self.SECURITY_ID, (_bid+_ask)/2)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug("Price logging failed: %s", e)
 
                 balance = self._fetch_balance()
                 usd = extract_usd_available(balance)

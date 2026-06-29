@@ -173,7 +173,8 @@ class TradingStrategy:
                 side = str(row.get("type", row.get("action", row.get("side", "")))).upper()
                 qty = float(row.get("quantity", row.get("qty", row.get("amount", 0))) or 0)
                 price = float(row.get("price", 0) or 0)
-            except Exception:
+            except (TypeError, ValueError, AttributeError) as e:
+                logger.debug("Skipping unparseable market row: %s", e)
                 continue
 
             weight = qty * price if price > 0 else qty
