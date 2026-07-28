@@ -11,6 +11,7 @@ import numpy as np
 import logging
 import threading
 import pickle
+import json
 import os
 from collections import deque
 from typing import Optional
@@ -18,6 +19,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = "models"
+MODEL_SCHEMA_VERSION = "v8-76f-next-step-v1"
 
 try:
     from sklearn.ensemble import (
@@ -317,14 +319,27 @@ class EnsemblePredictor:
             return
         model_path  = os.path.join(MODELS_DIR, f"{self.security_id}_model.pkl")
         scaler_path = os.path.join(MODELS_DIR, f"{self.security_id}_scaler.pkl")
+        meta_path   = os.path.join(MODELS_DIR, f"{self.security_id}_meta.json")
         if os.path.exists(model_path) and os.path.exists(scaler_path):
             try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                if (
+                    metadata.get("schema_version") != MODEL_SCHEMA_VERSION
+                    or metadata.get("feature_count") != FeatureEngineer.FEATURE_COUNT
+                ):
+                    logger.warning(
+                        f"{self.security_id}: نموذج قديم أو غير متوافق — سيتم تجاهله حتى إعادة التدريب"
+                    )
+                    return
                 with open(model_path,  "rb") as f:
                     self.model  = pickle.load(f)
                 with open(scaler_path, "rb") as f:
                     self.scaler = pickle.load(f)
                 self.is_trained = True
                 logger.info(f"✅ {self.security_id}: نموذج v8 مُحمَّل")
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                logger.warning(f"{self.security_id}: metadata غير موجودة/غير صالحة — تجاهل النموذج القديم: {e}")
             except Exception as e:
                 logger.warning(f"فشل تحميل النموذج: {e}")
 
