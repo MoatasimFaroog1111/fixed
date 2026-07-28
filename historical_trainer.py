@@ -4,7 +4,7 @@ historical_trainer.py v3 — ULTRA PRECISION
   P1: تدريب تصنيف (BUY/SELL/HOLD) بدلاً من regression
   P3: Stacking: XGB + LGBM + RF + GB مع LogisticRegression meta-learner
   P6: Walk-Forward تحقق بدلاً من random shuffle
-  P2: 60+ features من FeatureEngineer v8
+  P2: 76 features من FeatureEngineer v8
 شغّله بعد data_fetcher.py: python historical_trainer.py
 """
 import os
@@ -34,7 +34,7 @@ from ml_predictor import (
     FeatureEngineer,
     EnsemblePredictor,
     _build_classifier,
-    _make_labels,
+    _make_label,
 )
 from data_fetcher import load_prices
 
@@ -43,24 +43,21 @@ LOOKBACK = EnsemblePredictor.LOOKBACK  # 48
 
 def build_dataset(prices: np.ndarray):
     """
-    بناء dataset تصنيف.
-    X: 60+ features لكل سعر
-    y: label للسعر التالي (0=HOLD, 1=BUY, 2=SELL)
+    بناء dataset تصنيف بمحاذاة زمنية صحيحة.
+    X: 76 features محسوبة حتى السعر عند i.
+    y: حركة السعر التالية مباشرة من i إلى i+1 (0=HOLD, 1=BUY, 2=SELL).
     """
-    X, raw_prices = [], []
+    X, y = [], []
     for i in range(LOOKBACK, len(prices) - 1):
         feats = FeatureEngineer.compute(prices[i - LOOKBACK: i + 1])
         if feats is not None:
             X.append(feats)
-            raw_prices.append(prices[i + 1])
+            y.append(_make_label(prices[i], prices[i + 1]))
 
     if not X:
         return np.array([]), np.array([])
 
-    X = np.array(X)
-    raw_arr = np.array(raw_prices + [raw_prices[-1]])
-    y = _make_labels(raw_arr)[:-1]
-    return X, y
+    return np.array(X), np.array(y, dtype=int)
 
 
 def train_metal(security_id: str):
