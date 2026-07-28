@@ -9,6 +9,7 @@ historical_trainer.py v3 — ULTRA PRECISION
 """
 import os
 import pickle
+import json
 import numpy as np
 import logging
 
@@ -35,6 +36,7 @@ from ml_predictor import (
     EnsemblePredictor,
     _build_classifier,
     _make_label,
+    MODEL_SCHEMA_VERSION,
 )
 from data_fetcher import load_prices
 
@@ -116,8 +118,15 @@ def train_metal(security_id: str):
 
     model_path  = os.path.join(MODELS_DIR, f"{security_id}_model.pkl")
     scaler_path = os.path.join(MODELS_DIR, f"{security_id}_scaler.pkl")
+    meta_path   = os.path.join(MODELS_DIR, f"{security_id}_meta.json")
     with open(model_path,  "wb") as f: pickle.dump(model,  f)
     with open(scaler_path, "wb") as f: pickle.dump(scaler, f)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "schema_version": MODEL_SCHEMA_VERSION,
+            "feature_count": FeatureEngineer.FEATURE_COUNT,
+            "label_horizon": "next_price_i_to_i_plus_1",
+        }, f, indent=2)
 
     logger.info(f"  ✅ محفوظ في models/{security_id}_model.pkl")
 
