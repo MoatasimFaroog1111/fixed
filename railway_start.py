@@ -20,8 +20,9 @@ LEGACY_DIR = Path("/home/moatasim/fixed")
 MODELS_DIR = BASE_DIR / "models"
 DATA_DIR   = BASE_DIR / "data"
 
-# عدد الـ features في v8 — إذا تغيّر يُعاد التدريب تلقائياً
-EXPECTED_FEATURE_COUNT = 80
+# عدد الـ features الفعلي في FeatureEngineer v8:
+# 3 نوافذ × 20 feature + 16 advanced features = 76.
+EXPECTED_FEATURE_COUNT = 76
 METALS = ["AUXLN", "AGXLN", "PTXLN", "PDXLN"]
 
 
@@ -106,7 +107,7 @@ def _model_needs_retrain(security_id: str) -> bool:
     """
     يرجع True إذا:
       - النموذج غير موجود
-      - عدد الـ features لا يطابق v8 (80 feature)
+      - عدد الـ features لا يطابق FeatureEngineer v8 (76 feature)
     """
     model_path  = MODELS_DIR / f"{security_id}_model.pkl"
     scaler_path = MODELS_DIR / f"{security_id}_scaler.pkl"
