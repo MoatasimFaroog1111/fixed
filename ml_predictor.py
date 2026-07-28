@@ -63,16 +63,19 @@ class KalmanFilter1D:
 
 
 # ────────────────────────────────────────────────
-# Feature Engineer — 60+ features, Multi-Window
+# Feature Engineer — 76 features, Multi-Window
 # ────────────────────────────────────────────────
 class FeatureEngineer:
     """
-    60+ feature عبر 3 نوافذ زمنية: 12, 24, 48.
+    76 feature عبر 3 نوافذ زمنية: 12, 24, 48.
     REQUIRED_PRICES = 49 (LOOKBACK=48 + 1)
     """
-    LOOKBACKS       = [12, 24, 48]
-    MAX_LOOKBACK    = 48
-    REQUIRED_PRICES = 49  # MAX_LOOKBACK + 1
+    LOOKBACKS                = [12, 24, 48]
+    MAX_LOOKBACK             = 48
+    REQUIRED_PRICES          = 49  # MAX_LOOKBACK + 1
+    FEATURES_PER_WINDOW      = 20
+    ADVANCED_FEATURE_COUNT   = 16
+    FEATURE_COUNT            = len(LOOKBACKS) * FEATURES_PER_WINDOW + ADVANCED_FEATURE_COUNT
 
     @staticmethod
     def _ema(prices: np.ndarray, period: int) -> float:
@@ -114,7 +117,7 @@ class FeatureEngineer:
     def _window_features(p: np.ndarray, window: int) -> list:
         """20 features لنافذة واحدة."""
         if len(p) < window + 1:
-            return [0.0] * 20
+            return [0.0] * FeatureEngineer.FEATURES_PER_WINDOW
         pw = p[-(window + 1):]
         returns = np.diff(pw) / (pw[:-1] + 1e-10)
 
@@ -154,7 +157,7 @@ class FeatureEngineer:
         for lb in FeatureEngineer.LOOKBACKS:
             all_feats.extend(FeatureEngineer._window_features(p, lb))
 
-        # ── P2: Advanced features (20 إضافية) ──
+        # ── P2: Advanced features (16 إضافية) ──
         returns = np.diff(p) / (p[:-1] + 1e-10)
         cur = p[-1]
 
@@ -204,6 +207,10 @@ class FeatureEngineer:
 
         arr = np.array(all_feats, dtype=float)
         arr = np.where(np.isnan(arr) | np.isinf(arr), 0.0, arr)
+        if arr.size != FeatureEngineer.FEATURE_COUNT:
+            raise RuntimeError(
+                f"Feature count drift: generated {arr.size}, expected {FeatureEngineer.FEATURE_COUNT}"
+            )
         return arr
 
 
@@ -266,18 +273,22 @@ SELL_THRESHOLD_PCT = 0.15  # 0.15% هبوط → SELL
 CONF_THRESHOLD     = 0.60  # احتمالية ≥ 60% للقرار
 
 
+def _make_label(current_price: float, next_price: float) -> int:
+    """أنشئ label للحركة التالية مباشرةً من السعر الحالي إلى السعر القادم."""
+    chg = (next_price - current_price) / (current_price + 1e-10) * 100
+    if chg > BUY_THRESHOLD_PCT:
+        return 1
+    if chg < -SELL_THRESHOLD_PCT:
+        return 2
+    return 0
+
+
 def _make_labels(prices: np.ndarray) -> np.ndarray:
-    """P1: تحويل قيم الأسعار إلى labels: 1=BUY, 2=SELL, 0=HOLD."""
-    labels = []
-    for i in range(len(prices) - 1):
-        chg = (prices[i + 1] - prices[i]) / (prices[i] + 1e-10) * 100
-        if chg > BUY_THRESHOLD_PCT:
-            labels.append(1)
-        elif chg < -SELL_THRESHOLD_PCT:
-            labels.append(2)
-        else:
-            labels.append(0)
-    return np.array(labels, dtype=int)
+    """P1: تحويل سلسلة أسعار إلى labels متجاورة: 1=BUY, 2=SELL, 0=HOLD."""
+    return np.array(
+        [_make_label(prices[i], prices[i + 1]) for i in range(len(prices) - 1)],
+        dtype=int,
+    )
 
 
 # ────────────────────────────────────────────────
@@ -349,22 +360,18 @@ class EnsemblePredictor:
                 snapshot = list(self.price_history)
             prices = np.array(snapshot)
 
-            X, y_raw = [], []
+            X, y_labels = [], []
             for i in range(self.LOOKBACK, len(prices) - 1):
                 feats = FeatureEngineer.compute(prices[i - self.LOOKBACK: i + 1])
                 if feats is not None:
                     X.append(feats)
-                    y_raw.append(prices[i + 1])
+                    y_labels.append(_make_label(prices[i], prices[i + 1]))
 
             if len(X) < self.MIN_SAMPLES:
                 return
 
-            X      = np.array(X)
-            prices_seq = np.array([list(self.price_history)[i] for i in
-                                    range(self.LOOKBACK, len(snapshot) - 1)])
-
-            # P1: labels تصنيف بدلاً من قيم
-            y_labels = _make_labels(np.array(y_raw + [y_raw[-1]]))[:-1]
+            X = np.array(X)
+            y_labels = np.array(y_labels, dtype=int)
 
             # P6: Walk-Forward split (75% train, 25% test)
             split_idx = int(len(X) * 0.75)
