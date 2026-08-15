@@ -7,36 +7,104 @@ from pathlib import Path
 import requests
 
 BASE_URL = "https://freeserv.dukascopy.com/2.0/"
-TARGETS = {
-    "gold": ["XAUUSD"],
-    "silver": ["XAGUSD"],
-    "platinum": ["XPT.CMD/USD", "XPTCMDUSD"],
-    "palladium": ["XPD.CMD/USD", "XPDCMDUSD"],
+TARGET_TOKENS = {
+    "gold": ["XAU/USD", "XAUUSD"],
+    "silver": ["XAG/USD", "XAGUSD"],
+    "platinum": ["XPT", "PLATINUM"],
+    "palladium": ["XPD", "PALLADIUM"],
 }
+SAMPLE_START = int(datetime(2021, 8, 15, tzinfo=timezone.utc).timestamp() * 1000)
+SAMPLE_END = int(datetime(2021, 8, 22, tzinfo=timezone.utc).timestamp() * 1000)
 
 
 def get_json(params: dict) -> tuple[int, object]:
-    response = requests.get(BASE_URL, params=params, timeout=45)
+    response = requests.get(BASE_URL, params=params, timeout=60)
     try:
         payload = response.json()
     except ValueError:
-        payload = {"text": response.text[:1000]}
+        payload = {"text": response.text[:2000]}
     return response.status_code, payload
 
 
+def normalize_instruments(payload: object) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("data", "instruments", "result"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def searchable_text(item: dict) -> str:
+    return " ".join(str(item.get(k, "")) for k in ("id", "name", "nameLong", "symbol", "instrument")).upper()
+
+
+def find_candidates(instruments: list[dict], tokens: list[str]) -> list[dict]:
+    matches = []
+    for item in instruments:
+        text = searchable_text(item)
+        if any(token.upper() in text for token in tokens):
+            matches.append(item)
+    return matches
+
+
+def historical_sample(instrument_id: int | str) -> dict:
+    status, payload = get_json({
+        "path": "api/historicalPrices",
+        "instrument": instrument_id,
+        "timeFrame": "1hour",
+        "count": 200,
+        "start": SAMPLE_START,
+        "end": SAMPLE_END,
+        "dayStartTime": "UTC",
+        "offerSide": "B",
+    })
+    result = {"http_status": status}
+    if isinstance(payload, list):
+        result["rows"] = len(payload)
+        result["sample_first"] = payload[:2]
+        result["sample_last"] = payload[-2:]
+    else:
+        result["payload"] = payload
+    return result
+
+
 def main() -> None:
-    status, instruments = get_json({"path": "api/instrumentList"})
+    status, raw = get_json({
+        "path": "api/instrumentList",
+        "fields": "id,name,pipValue,nameLong",
+    })
+    instruments = normalize_instruments(raw)
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "instrument_list_http_status": status,
+        "instrument_count": len(instruments),
         "targets": {},
     }
 
-    searchable = json.dumps(instruments, ensure_ascii=False).upper()
-    for metal, candidates in TARGETS.items():
-        matches = [candidate for candidate in candidates if candidate.upper() in searchable]
-        report["targets"][metal] = {"candidates": candidates, "catalog_matches": matches}
-        print(json.dumps({metal: report["targets"][metal]}, ensure_ascii=False))
+    for metal, tokens in TARGET_TOKENS.items():
+        candidates = find_candidates(instruments, tokens)
+        compact = [
+            {k: item.get(k) for k in ("id", "name", "nameLong", "pipValue") if k in item}
+            for item in candidates[:10]
+        ]
+        target = {
+            "search_tokens": tokens,
+            "catalog_matches": compact,
+            "h1_samples": [],
+        }
+        for item in candidates[:3]:
+            instrument_id = item.get("id")
+            if instrument_id is None:
+                continue
+            target["h1_samples"].append({
+                "instrument": {k: item.get(k) for k in ("id", "name", "nameLong")},
+                "sample": historical_sample(instrument_id),
+            })
+        report["targets"][metal] = target
+        print(json.dumps({metal: target}, ensure_ascii=False))
 
     Path("dukascopy_probe_report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
