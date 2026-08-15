@@ -45,7 +45,7 @@ def test_required_horizons_exist():
 def test_usd_per_troy_ounce_is_converted_to_usd_per_kg():
     converter = PriceUnitConverter()
     assert converter.usd_per_troy_ounce_to_usd_per_kg(1.0) == TROY_OUNCES_PER_KILOGRAM
-    assert round(converter.usd_per_troy_ounce_to_usd_per_kg(4696.18), 2) == 150993.67
+    assert round(converter.usd_per_troy_ounce_to_usd_per_kg(4696.18), 2) == 150985.69
 
 
 def test_persisted_artifact_round_trip(tmp_path):
