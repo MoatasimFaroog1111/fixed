@@ -23,6 +23,18 @@ def classify(direction: float, confidence: float) -> str:
     return "needs_specialized_model"
 
 
+def extract_result(payload: dict) -> tuple[str | None, str | None, dict]:
+    selection = payload.get("selection") or {}
+    metal = selection.get("metal") or payload.get("metal")
+    horizon = selection.get("horizon") or payload.get("horizon")
+    if metal and horizon:
+        nested = ((payload.get("results") or {}).get(metal) or {}).get(horizon)
+        if isinstance(nested, dict):
+            return metal, horizon, nested
+    result = payload.get("result")
+    return metal, horizon, result if isinstance(result, dict) else {}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input-dir", required=True)
@@ -34,11 +46,11 @@ def main() -> None:
     rows = []
     for path in sorted(root.rglob("*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        metal = payload.get("metal")
-        horizon = payload.get("horizon")
-        result = payload.get("result", {})
-        if not metal or not horizon:
+        metal, horizon, result = extract_result(payload)
+        if not metal or not horizon or not result:
             continue
+        direction = float(result.get("direction_accuracy") or 0.0)
+        confidence = float(result.get("confidence") or 0.0)
         rows.append({
             "metal": metal,
             "metal_name": METAL_NAMES.get(metal, metal),
@@ -47,15 +59,16 @@ def main() -> None:
             "test_samples": result.get("test_samples"),
             "mae_log_return": result.get("mae_log_return"),
             "rmse_log_return": result.get("rmse_log_return"),
-            "direction_accuracy": result.get("direction_accuracy"),
-            "confidence": result.get("confidence"),
+            "direction_accuracy": direction,
+            "confidence": confidence,
             "usable_rows": result.get("usable_rows"),
             "train_samples": result.get("train_samples"),
-            "classification": classify(float(result.get("direction_accuracy") or 0.0), float(result.get("confidence") or 0.0)) if result.get("status") == "ok" else "failed",
+            "classification": classify(direction, confidence) if result.get("status") == "ok" else "failed",
         })
 
     rank = {h: i for i, h in enumerate(HORIZON_ORDER)}
-    rows.sort(key=lambda r: (list(METAL_NAMES).index(r["metal"]), rank.get(r["horizon"], 99)))
+    metal_rank = {m: i for i, m in enumerate(METAL_NAMES)}
+    rows.sort(key=lambda r: (metal_rank.get(r["metal"], 99), rank.get(r["horizon"], 99)))
 
     summary = {
         "dataset": "Dukascopy H1 USD/kg candidate",
@@ -70,7 +83,7 @@ def main() -> None:
     Path(args.json_out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     with Path(args.csv_out).open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ["metal","horizon","status"])
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ["metal", "horizon", "status"])
         writer.writeheader()
         writer.writerows(rows)
 
