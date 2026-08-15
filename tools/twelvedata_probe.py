@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Probe trigger after TWELVE_DATA_API_KEY was configured in repository secrets.
 import json
 import os
 from datetime import datetime, timezone
