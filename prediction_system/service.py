@@ -12,6 +12,14 @@ class PredictionService:
     """Online serving service: load persisted models and predict; never trains."""
 
     CONTEXT_IDS = tuple(m.security_id for m in METALS) + ("DXY",)
+    DATA_SOURCE = "Yahoo Finance futures via yfinance"
+    SOURCE_TICKERS = {
+        "AUXLN": "GC=F",
+        "AGXLN": "SI=F",
+        "PTXLN": "PL=F",
+        "PDXLN": "PA=F",
+        "DXY": "DX-Y.NYB",
+    }
 
     def __init__(
         self,
@@ -87,6 +95,7 @@ class PredictionService:
         return {
             "metal": name,
             "security_id": security_id,
+            "source_ticker": self.SOURCE_TICKERS.get(security_id),
             "current_usd_per_kg": round(current_kg, 2),
             "forecasts": results,
         }
@@ -97,11 +106,13 @@ class PredictionService:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "unit": "USD/kg",
-            "source_unit": "USD/troy oz",
+            "data_source": self.DATA_SOURCE,
+            "source_unit": "USD/troy oz for metal futures",
             "conversion": "1 kg = 32.1507466 troy oz",
             "architecture": "train-once-persist-load-predict",
             "method": "persisted direct multi-horizon error-weighted walk-forward ensembles",
             "context_assets": list(hourly_context.columns),
+            "source_tickers": dict(self.SOURCE_TICKERS),
             "metals": [
                 self.predict_metal(
                     metal.security_id,
