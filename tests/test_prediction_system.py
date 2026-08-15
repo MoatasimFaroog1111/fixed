@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from prediction_system.features import FeatureBuilder
 
+# CI trigger marker: validates PR pipeline against the repository's real datasets.
+
 
 def test_features_are_past_only_and_finite_after_warmup():
     idx = pd.date_range("2025-01-01", periods=900, freq="h")
