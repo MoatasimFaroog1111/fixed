@@ -15,6 +15,7 @@ from prediction_system.model import WalkForwardEnsembleTrainer
 from prediction_system.trainer import PredictionTrainingService
 
 MAP = {"AUXLN":"gold", "AGXLN":"silver", "PTXLN":"platinum", "PDXLN":"palladium"}
+MIN_CONTEXT_COVERAGE = 0.80
 
 
 def load_candidate(root: Path, security_id: str) -> pd.DataFrame:
@@ -28,7 +29,7 @@ def load_candidate(root: Path, security_id: str) -> pd.DataFrame:
 
 
 class CandidateRepository:
-    """Candidate metals from Dukascopy; legacy data retained only for DXY context."""
+    """Candidate metals from Dukascopy; legacy data retained only for optional context."""
     def __init__(self, candidate_root: Path, legacy_root: str = "data"):
         self.candidate_root = candidate_root
         self.legacy = PicklePriceRepository(legacy_root)
@@ -42,6 +43,44 @@ class CandidateRepository:
         if security_id in MAP:
             return self.hourly(security_id).resample("1D").last().dropna()
         return self.legacy.daily(security_id)
+
+
+def _normalize_index(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    if isinstance(out.index, pd.DatetimeIndex):
+        out.index = pd.to_datetime(out.index, utc=True).tz_convert(None)
+        out = out.sort_index()
+        out = out[~out.index.duplicated(keep="last")]
+    return out
+
+
+def _filter_context(context: pd.DataFrame, target_index: pd.DatetimeIndex, frequency: str) -> tuple[pd.DataFrame, dict]:
+    """Keep only context assets with sufficient causal coverage over the candidate period."""
+    if context is None or context.empty:
+        return pd.DataFrame(index=target_index), {}
+
+    context = _normalize_index(context)
+    if frequency == "daily":
+        probe_index = pd.DatetimeIndex(target_index.normalize().unique())
+    else:
+        probe_index = target_index
+
+    kept: dict[str, pd.Series] = {}
+    coverage: dict[str, float] = {}
+    for name in context.columns:
+        s = context[name].astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        if s.empty:
+            coverage[name] = 0.0
+            continue
+        aligned = s.reindex(probe_index, method="ffill")
+        ratio = float(aligned.notna().mean())
+        coverage[name] = ratio
+        if ratio >= MIN_CONTEXT_COVERAGE:
+            kept[name] = s
+
+    if not kept:
+        return pd.DataFrame(), coverage
+    return pd.concat(kept, axis=1), coverage
 
 
 def _split_counts(n: int) -> tuple[int, int]:
@@ -63,8 +102,11 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
         trainer=WalkForwardEnsembleTrainer(),
     )
     prices = service._series(repo.hourly(security_id))
-    hourly_context = service._context_frame("hourly")
-    daily_context = service._context_frame("daily")
+    raw_hourly_context = service._context_frame("hourly")
+    raw_daily_context = service._context_frame("daily")
+    hourly_context, hourly_coverage = _filter_context(raw_hourly_context, prices.index, "hourly")
+    daily_context, daily_coverage = _filter_context(raw_daily_context, prices.index, "daily")
+
     features = service.feature_builder.build(
         prices,
         hourly_context=hourly_context,
@@ -82,6 +124,9 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
         "usable_rows": int(len(dataset)),
         "hourly_context_assets": list(hourly_context.columns),
         "daily_context_assets": list(daily_context.columns),
+        "hourly_context_coverage": hourly_coverage,
+        "daily_context_coverage": daily_coverage,
+        "minimum_context_coverage": MIN_CONTEXT_COVERAGE,
     }
 
     if train_n == 0 or test_n < 50:
@@ -131,7 +176,7 @@ def main() -> None:
     repo = CandidateRepository(Path(args.candidate_dir))
     report = {
         "dataset": "Dukascopy H1 USD/kg candidate",
-        "architecture": "isolated-candidate-no-production-overwrite",
+        "architecture": "isolated-candidate-context-coverage-filtered-no-production-overwrite",
         "results": {},
     }
 
