@@ -5,6 +5,7 @@ from .artifacts import ForecastArtifactRepository, PickleForecastArtifactReposit
 from .config import METALS, HORIZONS
 from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
+from .units import PriceUnitConverter
 
 
 class PredictionService:
@@ -17,10 +18,12 @@ class PredictionService:
         repository: PriceRepository | None = None,
         artifact_repository: ForecastArtifactRepository | None = None,
         feature_builder: FeatureBuilder | None = None,
+        unit_converter: PriceUnitConverter | None = None,
     ):
         self.repository = repository or PicklePriceRepository()
         self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
         self.features = feature_builder or FeatureBuilder()
+        self.unit_converter = unit_converter or PriceUnitConverter()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
@@ -49,7 +52,8 @@ class PredictionService:
     ) -> dict:
         prices = self._series(self.repository.hourly(security_id))
         features = self.features.build(prices, hourly_context=hourly_context, daily_context=daily_context)
-        current = float(prices.iloc[-1])
+        current_source = float(prices.iloc[-1])
+        current_kg = self.unit_converter.usd_per_troy_ounce_to_usd_per_kg(current_source)
         results = []
 
         for horizon, hours in HORIZONS.items():
@@ -62,14 +66,17 @@ class PredictionService:
                 raise ValueError(f"Latest features contain missing values for {security_id}/{horizon}")
 
             predicted_return = artifact.predict_return(latest)
-            predicted = current * float(np.exp(predicted_return))
+            predicted_source = current_source * float(np.exp(predicted_return))
+            predicted_kg = self.unit_converter.usd_per_troy_ounce_to_usd_per_kg(predicted_source)
+            delta_kg = predicted_kg - current_kg
             results.append({
                 "horizon": horizon,
                 "hours": hours,
-                "current_usd_per_kg": round(current, 4),
-                "predicted_usd_per_kg": round(predicted, 4),
-                "change_pct": round((predicted / current - 1.0) * 100, 3),
-                "direction": "UP" if predicted > current else "DOWN" if predicted < current else "FLAT",
+                "current_usd_per_kg": round(current_kg, 2),
+                "predicted_usd_per_kg": round(predicted_kg, 2),
+                "change_usd_per_kg": round(delta_kg, 2),
+                "change_pct": round((predicted_source / current_source - 1.0) * 100, 3),
+                "direction": "UP" if predicted_source > current_source else "DOWN" if predicted_source < current_source else "FLAT",
                 "confidence": round(artifact.confidence, 3),
                 "validation_mae_return": round(artifact.validation_mae, 6),
                 "feature_count": len(artifact.feature_names),
@@ -77,7 +84,12 @@ class PredictionService:
                 "trained_at": artifact.trained_at,
             })
 
-        return {"metal": name, "security_id": security_id, "forecasts": results}
+        return {
+            "metal": name,
+            "security_id": security_id,
+            "current_usd_per_kg": round(current_kg, 2),
+            "forecasts": results,
+        }
 
     def predict_all(self) -> dict:
         hourly_context = self._context_frame("hourly")
@@ -85,6 +97,8 @@ class PredictionService:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "unit": "USD/kg",
+            "source_unit": "USD/troy oz",
+            "conversion": "1 kg = 32.1507466 troy oz",
             "architecture": "train-once-persist-load-predict",
             "method": "persisted direct multi-horizon error-weighted walk-forward ensembles",
             "context_assets": list(hourly_context.columns),
