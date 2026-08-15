@@ -11,13 +11,23 @@ class FeatureBuilder:
     def _clean(series: pd.Series) -> pd.Series:
         return series.astype(float).replace([np.inf, -np.inf], np.nan)
 
+    @staticmethod
+    def _normalize_time(obj: pd.Series | pd.DataFrame):
+        """Normalize aware/naive timestamps to UTC-naive for deterministic joins."""
+        out = obj.copy()
+        if isinstance(out.index, pd.DatetimeIndex):
+            out.index = pd.to_datetime(out.index, utc=True).tz_convert(None)
+            out = out.sort_index()
+            out = out[~out.index.duplicated(keep="last")]
+        return out
+
     def build(
         self,
         prices: pd.Series,
         hourly_context: pd.DataFrame | None = None,
         daily_context: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
-        p = self._clean(prices)
+        p = self._clean(self._normalize_time(prices))
         x = pd.DataFrame(index=p.index)
         logp = np.log(p.clip(lower=1e-12))
         r = logp.diff()
@@ -29,7 +39,7 @@ class FeatureBuilder:
             x[f"z_{w}"] = (p - p.rolling(w).mean()) / (p.rolling(w).std() + 1e-12)
 
         if hourly_context is not None and not hourly_context.empty:
-            context = hourly_context.reindex(x.index).ffill()
+            context = self._normalize_time(hourly_context).reindex(x.index).ffill()
             for name in context.columns:
                 s = self._clean(context[name])
                 ls = np.log(s.clip(lower=1e-12))
@@ -40,7 +50,7 @@ class FeatureBuilder:
                 x[f"ctx_{name}_corr_72"] = r.rolling(72).corr(sr)
 
         if daily_context is not None and not daily_context.empty:
-            daily = daily_context.sort_index()
+            daily = self._normalize_time(daily_context)
             for name in daily.columns:
                 ds = self._clean(daily[name])
                 dlog = np.log(ds.clip(lower=1e-12))
