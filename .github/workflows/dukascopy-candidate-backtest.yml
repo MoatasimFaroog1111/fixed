@@ -10,8 +10,15 @@ on:
 
 jobs:
   backtest:
+    name: ${{ matrix.metal }}-${{ matrix.horizon }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        metal: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [6h, 12h, 18h, 24h, 48h, 1w, 1m]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,12 +33,18 @@ jobs:
           path: dukascopy_h1_candidate
           github-token: ${{ github.token }}
           run-id: 31881420255
-      - name: Run isolated 28-horizon backtest
+      - name: Run isolated candidate backtest
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python tools/backtest_dukascopy_candidate.py --candidate-dir dukascopy_h1_candidate --out candidate_backtest.json
-      - uses: actions/upload-artifact@v4
+        run: >-
+          python tools/backtest_dukascopy_candidate.py
+          --candidate-dir dukascopy_h1_candidate
+          --metal ${{ matrix.metal }}
+          --horizon ${{ matrix.horizon }}
+          --out candidate_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
+      - name: Upload result
+        uses: actions/upload-artifact@v4
         with:
-          name: dukascopy-candidate-backtest
-          path: candidate_backtest.json
+          name: dukascopy-backtest-${{ matrix.metal }}-${{ matrix.horizon }}
+          path: candidate_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
           if-no-files-found: error
