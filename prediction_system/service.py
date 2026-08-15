@@ -1,27 +1,33 @@
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
+from .artifacts import ForecastArtifactRepository, PickleForecastArtifactRepository
 from .config import METALS, HORIZONS
 from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
-from .model import WalkForwardEnsemble
 
 
 class PredictionService:
-    """Application service: orchestrates data, features and independent horizon models."""
+    """Online serving service: load persisted models and predict; never trains."""
+
     CONTEXT_IDS = tuple(m.security_id for m in METALS) + ("DXY",)
 
-    def __init__(self, repository: PriceRepository | None = None):
+    def __init__(
+        self,
+        repository: PriceRepository | None = None,
+        artifact_repository: ForecastArtifactRepository | None = None,
+        feature_builder: FeatureBuilder | None = None,
+    ):
         self.repository = repository or PicklePriceRepository()
-        self.features = FeatureBuilder()
+        self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
+        self.features = feature_builder or FeatureBuilder()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
         s = frame["price"].astype(float)
-        idx = pd.to_datetime(s.index, errors="coerce", utc=True)
-        valid = ~idx.isna()
-        s = s[valid].copy()
-        s.index = idx[valid].tz_convert(None)
+        index = pd.to_datetime(s.index, errors="coerce", utc=True)
+        s.index = index.tz_convert(None)
+        s = s[~s.index.isna()]
         return s.sort_index()[~s.index.duplicated(keep="last")]
 
     def _context_frame(self, frequency: str) -> pd.DataFrame:
@@ -32,9 +38,7 @@ class PredictionService:
                 columns[security_id] = self._series(loader(security_id))
             except (FileNotFoundError, ValueError):
                 continue
-        if not columns:
-            return pd.DataFrame()
-        return pd.concat(columns, axis=1, sort=False).sort_index()
+        return pd.concat(columns, axis=1, sort=False).sort_index() if columns else pd.DataFrame()
 
     def predict_metal(
         self,
@@ -44,35 +48,33 @@ class PredictionService:
         daily_context: pd.DataFrame | None = None,
     ) -> dict:
         prices = self._series(self.repository.hourly(security_id))
-        X = self.features.build(prices, hourly_context=hourly_context, daily_context=daily_context)
+        features = self.features.build(prices, hourly_context=hourly_context, daily_context=daily_context)
         current = float(prices.iloc[-1])
         results = []
 
-        for label, steps in HORIZONS.items():
-            target = np.log(prices.shift(-steps) / prices)
-            dataset = X.join(target.rename("target")).dropna()
-            latest = X.iloc[[-1]].dropna(axis=1)
-            cols = dataset.drop(columns="target").columns.intersection(latest.columns)
-            train = dataset[cols].dropna()
-            y = dataset.loc[train.index, "target"]
+        for horizon, hours in HORIZONS.items():
+            artifact = self.artifact_repository.load(security_id, horizon)
+            missing = [column for column in artifact.feature_names if column not in features.columns]
+            if missing:
+                raise ValueError(f"Feature schema mismatch for {security_id}/{horizon}: {missing[:5]}")
+            latest = features.loc[:, list(artifact.feature_names)].iloc[[-1]]
+            if latest.isna().any(axis=None):
+                raise ValueError(f"Latest features contain missing values for {security_id}/{horizon}")
 
-            if len(train) < 250:
-                results.append({"horizon": label, "status": "insufficient_data"})
-                continue
-
-            forecast = WalkForwardEnsemble().fit_predict(train, y, latest[cols])
-            predicted = current * float(np.exp(forecast.predicted_return))
+            predicted_return = artifact.predict_return(latest)
+            predicted = current * float(np.exp(predicted_return))
             results.append({
-                "horizon": label,
-                "hours": steps,
+                "horizon": horizon,
+                "hours": hours,
                 "current_usd_per_kg": round(current, 4),
                 "predicted_usd_per_kg": round(predicted, 4),
                 "change_pct": round((predicted / current - 1.0) * 100, 3),
                 "direction": "UP" if predicted > current else "DOWN" if predicted < current else "FLAT",
-                "confidence": round(forecast.confidence, 3),
-                "validation_mae_return": round(forecast.validation_mae, 6),
-                "feature_count": int(len(cols)),
-                "training_samples": int(len(train)),
+                "confidence": round(artifact.confidence, 3),
+                "validation_mae_return": round(artifact.validation_mae, 6),
+                "feature_count": len(artifact.feature_names),
+                "training_samples": artifact.training_samples,
+                "trained_at": artifact.trained_at,
             })
 
         return {"metal": name, "security_id": security_id, "forecasts": results}
@@ -83,15 +85,16 @@ class PredictionService:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "unit": "USD/kg",
-            "method": "direct multi-horizon error-weighted walk-forward ensemble with cross-asset and daily-regime context",
+            "architecture": "train-once-persist-load-predict",
+            "method": "persisted direct multi-horizon error-weighted walk-forward ensembles",
             "context_assets": list(hourly_context.columns),
             "metals": [
                 self.predict_metal(
-                    m.security_id,
-                    m.name,
+                    metal.security_id,
+                    metal.name,
                     hourly_context=hourly_context,
                     daily_context=daily_context,
                 )
-                for m in METALS
+                for metal in METALS
             ],
         }
