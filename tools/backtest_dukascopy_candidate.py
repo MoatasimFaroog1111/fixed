@@ -16,6 +16,8 @@ from prediction_system.trainer import PredictionTrainingService
 
 MAP = {"AUXLN":"gold", "AGXLN":"silver", "PTXLN":"platinum", "PDXLN":"palladium"}
 MIN_CONTEXT_COVERAGE = 0.80
+MIN_FEATURE_COVERAGE = 0.95
+FEATURE_WARMUP_ROWS = max(FeatureBuilder.WINDOWS)
 
 
 def load_candidate(root: Path, security_id: str) -> pd.DataFrame:
@@ -60,10 +62,7 @@ def _filter_context(context: pd.DataFrame, target_index: pd.DatetimeIndex, frequ
         return pd.DataFrame(index=target_index), {}
 
     context = _normalize_index(context)
-    if frequency == "daily":
-        probe_index = pd.DatetimeIndex(target_index.normalize().unique())
-    else:
-        probe_index = target_index
+    probe_index = pd.DatetimeIndex(target_index.normalize().unique()) if frequency == "daily" else target_index
 
     kept: dict[str, pd.Series] = {}
     coverage: dict[str, float] = {}
@@ -80,7 +79,24 @@ def _filter_context(context: pd.DataFrame, target_index: pd.DatetimeIndex, frequ
 
     if not kept:
         return pd.DataFrame(), coverage
-    return pd.concat(kept, axis=1), coverage
+    return pd.concat(kept, axis=1, sort=False), coverage
+
+
+def _filter_features(features: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], list[str]]:
+    """Remove derived columns that cannot support a stable time-series backtest.
+
+    Coverage is measured after the expected rolling-feature warmup. This keeps the
+    production FeatureBuilder untouched while preventing a single stale context
+    feature from invalidating every candidate observation.
+    """
+    clean = features.replace([np.inf, -np.inf], np.nan)
+    probe = clean.iloc[min(FEATURE_WARMUP_ROWS, max(0, len(clean) - 1)):]
+    coverage = {str(col): float(probe[col].notna().mean()) for col in clean.columns}
+    kept = [col for col in clean.columns if coverage[str(col)] >= MIN_FEATURE_COVERAGE]
+    dropped = [str(col) for col in clean.columns if col not in kept]
+    if not kept:
+        return pd.DataFrame(index=clean.index), coverage, dropped
+    return clean[kept], coverage, dropped
 
 
 def _split_counts(n: int) -> tuple[int, int]:
@@ -107,26 +123,32 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
     hourly_context, hourly_coverage = _filter_context(raw_hourly_context, prices.index, "hourly")
     daily_context, daily_coverage = _filter_context(raw_daily_context, prices.index, "daily")
 
-    features = service.feature_builder.build(
+    raw_features = service.feature_builder.build(
         prices,
         hourly_context=hourly_context,
         daily_context=daily_context,
     )
+    features, feature_coverage, dropped_features = _filter_features(raw_features)
 
     steps = HORIZONS[horizon]
-    target = np.log(prices.shift(-steps) / prices).rename("target")
+    target = np.log(prices.shift(-steps) / prices).replace([np.inf, -np.inf], np.nan).rename("target")
     dataset = features.join(target).dropna()
     train_n, test_n = _split_counts(len(dataset))
 
     diagnostics = {
         "raw_price_rows": int(len(prices)),
-        "feature_rows": int(len(features)),
+        "feature_rows": int(len(raw_features)),
         "usable_rows": int(len(dataset)),
+        "kept_feature_count": int(features.shape[1]),
+        "dropped_feature_count": int(len(dropped_features)),
+        "dropped_features": dropped_features,
         "hourly_context_assets": list(hourly_context.columns),
         "daily_context_assets": list(daily_context.columns),
         "hourly_context_coverage": hourly_coverage,
         "daily_context_coverage": daily_coverage,
         "minimum_context_coverage": MIN_CONTEXT_COVERAGE,
+        "minimum_feature_coverage": MIN_FEATURE_COVERAGE,
+        "minimum_feature_coverage_observed": float(min(feature_coverage.values())) if feature_coverage else 0.0,
     }
 
     if train_n == 0 or test_n < 50:
@@ -176,7 +198,7 @@ def main() -> None:
     repo = CandidateRepository(Path(args.candidate_dir))
     report = {
         "dataset": "Dukascopy H1 USD/kg candidate",
-        "architecture": "isolated-candidate-context-coverage-filtered-no-production-overwrite",
+        "architecture": "isolated-candidate-context-and-feature-coverage-filtered-no-production-overwrite",
         "results": {},
     }
 
