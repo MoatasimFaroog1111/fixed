@@ -1,0 +1,26 @@
+name: Dukascopy Metals Probe
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'tools/dukascopy_probe.py'
+      - '.github/workflows/dukascopy-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependency
+        run: pip install requests
+      - name: Probe Dukascopy instrument catalog
+        run: python tools/dukascopy_probe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-probe-report
+          path: dukascopy_probe_report.json
