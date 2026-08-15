@@ -1,0 +1,30 @@
+name: BullionVault Chart Export Probe
+
+on:
+  push:
+    branches:
+      - 'agent/multi-horizon-price-forecast'
+    paths:
+      - 'tools/bullionvault_chart_probe.py'
+      - '.github/workflows/bullionvault-chart-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install probe dependency
+        run: pip install requests
+      - name: Discover BullionVault chart export endpoint and sample data
+        run: python tools/bullionvault_chart_probe.py
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bullionvault-chart-probe-report
+          path: bullionvault_chart_probe_report.json
