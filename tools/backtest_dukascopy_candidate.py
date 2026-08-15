@@ -83,12 +83,7 @@ def _filter_context(context: pd.DataFrame, target_index: pd.DatetimeIndex, frequ
 
 
 def _filter_features(features: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], list[str]]:
-    """Remove derived columns that cannot support a stable time-series backtest.
-
-    Coverage is measured after the expected rolling-feature warmup. This keeps the
-    production FeatureBuilder untouched while preventing a single stale context
-    feature from invalidating every candidate observation.
-    """
+    """Remove derived columns that cannot support a stable time-series backtest."""
     clean = features.replace([np.inf, -np.inf], np.nan)
     probe = clean.iloc[min(FEATURE_WARMUP_ROWS, max(0, len(clean) - 1)):]
     coverage = {str(col): float(probe[col].notna().mean()) for col in clean.columns}
@@ -193,28 +188,36 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-dir", required=True)
     parser.add_argument("--out", default="candidate_backtest.json")
+    parser.add_argument("--metal", choices=tuple(MAP), help="Run one metal security id only")
+    parser.add_argument("--horizon", choices=tuple(HORIZONS), help="Run one horizon only")
     args = parser.parse_args()
 
     repo = CandidateRepository(Path(args.candidate_dir))
+    selected_metals = [metal for metal in METALS if args.metal is None or metal.security_id == args.metal]
+    selected_horizons = [h for h in HORIZONS if args.horizon is None or h == args.horizon]
+
     report = {
         "dataset": "Dukascopy H1 USD/kg candidate",
         "architecture": "isolated-candidate-context-and-feature-coverage-filtered-no-production-overwrite",
+        "selection": {"metal": args.metal, "horizon": args.horizon},
         "results": {},
     }
 
     failures = 0
-    for metal in METALS:
+    completed = 0
+    for metal in selected_metals:
         report["results"][metal.security_id] = {}
-        for horizon in HORIZONS:
+        for horizon in selected_horizons:
             print("BACKTEST", metal.security_id, horizon, flush=True)
             result = evaluate(repo, metal.security_id, horizon)
             report["results"][metal.security_id][horizon] = result
             print(json.dumps({"metal": metal.security_id, "horizon": horizon, **result}), flush=True)
+            completed += 1
             if result.get("status") != "ok":
                 failures += 1
 
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"completed horizons={len(METALS) * len(HORIZONS)} insufficient={failures}")
+    print(f"completed horizons={completed} insufficient={failures}")
 
 
 if __name__ == "__main__":
