@@ -1,6 +1,14 @@
 name: Prediction System CI
 
 on:
+  push:
+    branches:
+      - 'agent/multi-horizon-price-forecast'
+    paths:
+      - 'prediction_system/**'
+      - 'prediction_dashboard.py'
+      - 'tests/test_prediction_system.py'
+      - '.github/workflows/prediction-ci.yml'
   pull_request:
     paths:
       - 'prediction_system/**'
@@ -12,7 +20,7 @@ on:
 jobs:
   prediction-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,8 +49,8 @@ jobs:
                   s = s[~s.index.isna()]
               return s.sort_index()[~s.index.duplicated(keep='last')]
 
-          hourly = pd.concat({sid: series(repo.hourly(sid)) for sid in ids}, axis=1).sort_index()
-          daily = pd.concat({sid: series(repo.daily(sid)) for sid in ids}, axis=1).sort_index()
+          hourly = pd.concat({sid: series(repo.hourly(sid)) for sid in ids}, axis=1, sort=False).sort_index()
+          daily = pd.concat({sid: series(repo.daily(sid)) for sid in ids}, axis=1, sort=False).sort_index()
 
           assert set(ids).issubset(hourly.columns)
           assert set(ids).issubset(daily.columns)
@@ -56,4 +64,26 @@ jobs:
               assert len(latest) >= 50, (sid, len(latest))
               assert np.isfinite(latest).all(), sid
               print(sid, 'rows=', len(target), 'features=', len(latest), 'price=', float(target.iloc[-1]))
+          PY
+      - name: Validate full multi-horizon forecasts
+        run: |
+          python - <<'PY'
+          import math
+          from prediction_system import PredictionService
+          from prediction_system.config import HORIZONS, METALS
+
+          result = PredictionService().predict_all()
+          assert result['unit'] == 'USD/kg'
+          assert len(result['metals']) == len(METALS)
+          expected = list(HORIZONS)
+          for metal in result['metals']:
+              forecasts = metal['forecasts']
+              assert [f['horizon'] for f in forecasts] == expected
+              for forecast in forecasts:
+                  assert forecast.get('status') != 'insufficient_data', (metal['metal'], forecast)
+                  assert forecast['current_usd_per_kg'] > 0
+                  assert forecast['predicted_usd_per_kg'] > 0
+                  assert math.isfinite(forecast['predicted_usd_per_kg'])
+                  assert 0.0 <= forecast['confidence'] <= 1.0
+              print(metal['metal'], 'OK', len(forecasts), 'horizons')
           PY
