@@ -2,36 +2,30 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 from .artifacts import ForecastArtifactRepository, PickleForecastArtifactRepository
+from .bullionvault import BullionVaultMarketPriceProvider, LivePriceProvider
 from .config import METALS, HORIZONS
 from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
-from .units import PriceUnitConverter
 
 
 class PredictionService:
     """Online serving service: load persisted models and predict; never trains."""
 
     CONTEXT_IDS = tuple(m.security_id for m in METALS) + ("DXY",)
-    DATA_SOURCE = "Yahoo Finance futures via yfinance"
-    SOURCE_TICKERS = {
-        "AUXLN": "GC=F",
-        "AGXLN": "SI=F",
-        "PTXLN": "PL=F",
-        "PDXLN": "PA=F",
-        "DXY": "DX-Y.NYB",
-    }
+    LIVE_DATA_SOURCE = "BullionVault public market XML (London, USD/kg midpoint)"
+    TRAINING_DATA_SOURCE = "existing project historical futures dataset (Yahoo Finance/yfinance)"
 
     def __init__(
         self,
         repository: PriceRepository | None = None,
         artifact_repository: ForecastArtifactRepository | None = None,
         feature_builder: FeatureBuilder | None = None,
-        unit_converter: PriceUnitConverter | None = None,
+        live_price_provider: LivePriceProvider | None = None,
     ):
         self.repository = repository or PicklePriceRepository()
         self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
         self.features = feature_builder or FeatureBuilder()
-        self.unit_converter = unit_converter or PriceUnitConverter()
+        self.live_prices = live_price_provider or BullionVaultMarketPriceProvider()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
@@ -58,10 +52,13 @@ class PredictionService:
         hourly_context: pd.DataFrame | None = None,
         daily_context: pd.DataFrame | None = None,
     ) -> dict:
-        prices = self._series(self.repository.hourly(security_id))
-        features = self.features.build(prices, hourly_context=hourly_context, daily_context=daily_context)
-        current_source = float(prices.iloc[-1])
-        current_kg = self.unit_converter.usd_per_troy_ounce_to_usd_per_kg(current_source)
+        historical_prices = self._series(self.repository.hourly(security_id))
+        features = self.features.build(
+            historical_prices,
+            hourly_context=hourly_context,
+            daily_context=daily_context,
+        )
+        current_kg = float(self.live_prices.usd_per_kg(security_id))
         results = []
 
         for horizon, hours in HORIZONS.items():
@@ -74,8 +71,7 @@ class PredictionService:
                 raise ValueError(f"Latest features contain missing values for {security_id}/{horizon}")
 
             predicted_return = artifact.predict_return(latest)
-            predicted_source = current_source * float(np.exp(predicted_return))
-            predicted_kg = self.unit_converter.usd_per_troy_ounce_to_usd_per_kg(predicted_source)
+            predicted_kg = current_kg * float(np.exp(predicted_return))
             delta_kg = predicted_kg - current_kg
             results.append({
                 "horizon": horizon,
@@ -83,8 +79,8 @@ class PredictionService:
                 "current_usd_per_kg": round(current_kg, 2),
                 "predicted_usd_per_kg": round(predicted_kg, 2),
                 "change_usd_per_kg": round(delta_kg, 2),
-                "change_pct": round((predicted_source / current_source - 1.0) * 100, 3),
-                "direction": "UP" if predicted_source > current_source else "DOWN" if predicted_source < current_source else "FLAT",
+                "change_pct": round((predicted_kg / current_kg - 1.0) * 100, 3),
+                "direction": "UP" if predicted_kg > current_kg else "DOWN" if predicted_kg < current_kg else "FLAT",
                 "confidence": round(artifact.confidence, 3),
                 "validation_mae_return": round(artifact.validation_mae, 6),
                 "feature_count": len(artifact.feature_names),
@@ -95,7 +91,7 @@ class PredictionService:
         return {
             "metal": name,
             "security_id": security_id,
-            "source_ticker": self.SOURCE_TICKERS.get(security_id),
+            "market": "BullionVault London",
             "current_usd_per_kg": round(current_kg, 2),
             "forecasts": results,
         }
@@ -106,13 +102,12 @@ class PredictionService:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "unit": "USD/kg",
-            "data_source": self.DATA_SOURCE,
-            "source_unit": "USD/troy oz for metal futures",
-            "conversion": "1 kg = 32.1507466 troy oz",
+            "live_data_source": self.LIVE_DATA_SOURCE,
+            "training_data_source": self.TRAINING_DATA_SOURCE,
+            "live_price_method": "midpoint of best BullionVault bid and ask",
             "architecture": "train-once-persist-load-predict",
             "method": "persisted direct multi-horizon error-weighted walk-forward ensembles",
             "context_assets": list(hourly_context.columns),
-            "source_tickers": dict(self.SOURCE_TICKERS),
             "metals": [
                 self.predict_metal(
                     metal.security_id,
