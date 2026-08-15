@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install numpy pandas scikit-learn
+        run: pip install numpy pandas scikit-learn requests
       - name: Download verified Dukascopy dataset artifact
         uses: actions/download-artifact@v4
         with:
