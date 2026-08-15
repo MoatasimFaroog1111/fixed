@@ -5,22 +5,26 @@ on:
     branches: [agent/multi-horizon-price-forecast]
     paths:
       - 'tools/dukascopy_probe.py'
+      - 'tools/dukascopy_node_probe.mjs'
       - '.github/workflows/dukascopy-probe.yml'
   workflow_dispatch:
 
 jobs:
   probe:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
-      - name: Install dependency
-        run: pip install requests
-      - name: Probe Dukascopy instrument catalog
-        run: python tools/dukascopy_probe.py
+          node-version: '22'
+      - name: Install Dukascopy downloader
+        run: npm install --no-save dukascopy-node
+      - name: Probe direct H1 history for all four metals
+        run: node tools/dukascopy_node_probe.mjs
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: dukascopy-probe-report
-          path: dukascopy_probe_report.json
+          name: dukascopy-node-probe-report
+          path: dukascopy_node_probe_report.json
+          if-no-files-found: warn
