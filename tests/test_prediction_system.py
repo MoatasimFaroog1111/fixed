@@ -5,6 +5,7 @@ from sklearn.dummy import DummyRegressor
 from prediction_system.artifacts import PersistedForecastModel, PickleForecastArtifactRepository
 from prediction_system.features import FeatureBuilder
 from prediction_system.service import PredictionService
+from prediction_system.targets import TimeAwareHorizonTargetBuilder
 from prediction_system.units import PriceUnitConverter, TROY_OUNCES_PER_KILOGRAM
 
 
@@ -40,6 +41,27 @@ def test_cross_asset_and_daily_context_are_included():
 def test_required_horizons_exist():
     from prediction_system.config import HORIZONS
     assert list(HORIZONS) == ["6h", "12h", "18h", "24h", "48h", "1w", "1m"]
+
+
+def test_time_aware_target_uses_clock_hours_not_row_count():
+    idx = pd.to_datetime([
+        "2026-01-02 20:00:00",
+        "2026-01-02 21:00:00",
+        "2026-01-05 00:00:00",
+        "2026-01-05 01:00:00",
+        "2026-01-05 02:00:00",
+    ])
+    prices = pd.Series([100.0, 101.0, 105.0, 106.0, 107.0], index=idx)
+    target = TimeAwareHorizonTargetBuilder(max_forward_tolerance_hours=72).build(prices, 6)
+    expected = np.log(105.0 / 100.0)
+    assert np.isclose(target.loc[pd.Timestamp("2026-01-02 20:00:00")], expected)
+
+
+def test_time_aware_target_rejects_future_price_beyond_tolerance():
+    idx = pd.to_datetime(["2026-01-01 00:00:00", "2026-01-05 00:00:00"])
+    prices = pd.Series([100.0, 110.0], index=idx)
+    target = TimeAwareHorizonTargetBuilder(max_forward_tolerance_hours=6).build(prices, 24)
+    assert np.isnan(target.iloc[0])
 
 
 def test_usd_per_troy_ounce_is_converted_to_usd_per_kg():
