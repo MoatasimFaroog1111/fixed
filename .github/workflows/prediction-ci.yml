@@ -30,9 +30,19 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install focused dependencies
-        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn pytest
+        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn pytest requests
       - name: Unit tests
         run: pytest -q tests/test_prediction_system.py
+      - name: Validate BullionVault public market source
+        run: |
+          python - <<'PY'
+          from prediction_system.bullionvault import BullionVaultMarketPriceProvider
+          provider = BullionVaultMarketPriceProvider(timeout_seconds=20)
+          for sid in ('AUXLN', 'AGXLN', 'PTXLN', 'PDXLN'):
+              price = provider.usd_per_kg(sid)
+              assert price > 0, (sid, price)
+              print(sid, 'BullionVault USD/kg midpoint=', round(price, 2))
+          PY
       - name: Validate real repository data and production trainer
         run: |
           python - <<'PY'
@@ -86,6 +96,10 @@ jobs:
           from prediction_system.features import FeatureBuilder
           from prediction_system.service import PredictionService
 
+          class FakeLivePriceProvider:
+              def usd_per_kg(self, security_id):
+                  return {'AUXLN': 130000.0, 'AGXLN': 1800.0, 'PTXLN': 45000.0, 'PDXLN': 39000.0}[security_id]
+
           price_repo = PicklePriceRepository('data')
           artifact_repo = PickleForecastArtifactRepository('prediction_models_ci')
           ids = tuple(m.security_id for m in METALS) + ('DXY',)
@@ -121,11 +135,17 @@ jobs:
                   ))
 
           started = time.perf_counter()
-          result = PredictionService(repository=price_repo, artifact_repository=artifact_repo).predict_all()
+          result = PredictionService(
+              repository=price_repo,
+              artifact_repository=artifact_repo,
+              live_price_provider=FakeLivePriceProvider(),
+          ).predict_all()
           elapsed = time.perf_counter() - started
           assert result['architecture'] == 'train-once-persist-load-predict'
+          assert 'BullionVault' in result['live_data_source']
           assert len(result['metals']) == 4
           assert all(len(m['forecasts']) == 7 for m in result['metals'])
+          assert result['metals'][0]['current_usd_per_kg'] == 130000.0
           assert elapsed < 15.0, elapsed
           print('serving OK seconds=', round(elapsed, 3), 'forecasts=', 28)
           PY
