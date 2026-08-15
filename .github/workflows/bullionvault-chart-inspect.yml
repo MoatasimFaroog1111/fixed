@@ -1,0 +1,22 @@
+name: BullionVault Chart Library Inspect
+
+on:
+  push:
+    branches:
+      - 'agent/multi-horizon-price-forecast'
+    paths:
+      - 'tools/bullionvault_chart_inspect.py'
+      - '.github/workflows/bullionvault-chart-inspect.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - run: python tools/bullionvault_chart_inspect.py
