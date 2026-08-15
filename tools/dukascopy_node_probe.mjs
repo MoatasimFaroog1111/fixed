@@ -13,8 +13,18 @@ const targets = {
 const windows = {
   validation: { from: new Date('2022-01-03T00:00:00Z'), to: new Date('2022-01-10T00:00:00Z') },
   fiveYearBoundary: { from: new Date('2021-08-15T00:00:00Z'), to: new Date('2021-08-22T00:00:00Z') },
-  platinumStartCheck: { from: new Date('2021-11-01T00:00:00Z'), to: new Date('2021-11-08T00:00:00Z') },
 };
+
+const monthlyChecks = [
+  '2021-07-01', '2021-08-01', '2021-09-01', '2021-10-01',
+  '2021-11-01', '2021-12-01', '2022-01-01'
+];
+
+function oneWeek(dateText) {
+  const from = new Date(`${dateText}T00:00:00Z`);
+  const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return { from, to };
+}
 
 async function fetchWindow(instrument, dates) {
   try {
@@ -28,15 +38,25 @@ async function fetchWindow(instrument, dates) {
   }
 }
 
+async function scanAvailability(instrument) {
+  const checks = [];
+  for (const dateText of monthlyChecks) {
+    const result = await fetchWindow(instrument, oneWeek(dateText));
+    checks.push({ date: dateText, rows: result.rows ?? 0, ok: result.ok, first: result.first ?? null });
+  }
+  return checks;
+}
+
 const report = { generated_at: new Date().toISOString(), source: 'Dukascopy via dukascopy-node', timeframe: 'h1', targets: {} };
 
 for (const [metal, instrument] of Object.entries(targets)) {
-  const result = { instrument, validation: await fetchWindow(instrument, windows.validation) };
-  if (metal === 'platinum') {
-    result.five_year_boundary = await fetchWindow(instrument, windows.fiveYearBoundary);
-    result.platinum_start_check = await fetchWindow(instrument, windows.platinumStartCheck);
-  } else {
-    result.five_year_boundary = await fetchWindow(instrument, windows.fiveYearBoundary);
+  const result = {
+    instrument,
+    validation: await fetchWindow(instrument, windows.validation),
+    five_year_boundary: await fetchWindow(instrument, windows.fiveYearBoundary),
+  };
+  if (metal !== 'gold') {
+    result.availability_scan = await scanAvailability(instrument);
   }
   report.targets[metal] = result;
   console.log(JSON.stringify({ [metal]: result }));
