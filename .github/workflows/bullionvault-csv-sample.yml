@@ -1,0 +1,30 @@
+name: BullionVault Historical CSV Sample
+
+on:
+  push:
+    branches:
+      - 'agent/multi-horizon-price-forecast'
+    paths:
+      - 'tools/bullionvault_csv_sample.py'
+      - '.github/workflows/bullionvault-csv-sample.yml'
+  workflow_dispatch:
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests pandas
+      - name: Sample BullionVault CSV exports
+        run: python tools/bullionvault_csv_sample.py
+      - name: Upload sample report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bullionvault-csv-sample-report
+          path: bullionvault_csv_sample_report.json
