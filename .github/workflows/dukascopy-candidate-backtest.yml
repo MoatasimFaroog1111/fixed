@@ -27,6 +27,8 @@ jobs:
           github-token: ${{ github.token }}
           run-id: 31881420255
       - name: Run isolated 28-horizon backtest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: python tools/backtest_dukascopy_candidate.py --candidate-dir dukascopy_h1_candidate --out candidate_backtest.json
       - uses: actions/upload-artifact@v4
         with:
