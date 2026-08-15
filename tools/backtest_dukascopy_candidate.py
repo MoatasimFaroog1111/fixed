@@ -125,8 +125,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
     )
     features, feature_coverage, dropped_features = _filter_features(raw_features)
 
-    steps = HORIZONS[horizon]
-    target = np.log(prices.shift(-steps) / prices).replace([np.inf, -np.inf], np.nan).rename("target")
+    target = service.target_builder.build(prices, HORIZONS[horizon])
     dataset = features.join(target).dropna()
     train_n, test_n = _split_counts(len(dataset))
 
@@ -144,6 +143,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
         "minimum_context_coverage": MIN_CONTEXT_COVERAGE,
         "minimum_feature_coverage": MIN_FEATURE_COVERAGE,
         "minimum_feature_coverage_observed": float(min(feature_coverage.values())) if feature_coverage else 0.0,
+        "target_mode": "time-aware-clock-hours",
     }
 
     if train_n == 0 or test_n < 50:
@@ -198,7 +198,7 @@ def main() -> None:
 
     report = {
         "dataset": "Dukascopy H1 USD/kg candidate",
-        "architecture": "isolated-candidate-context-and-feature-coverage-filtered-no-production-overwrite",
+        "architecture": "isolated-candidate-time-aware-target-context-and-feature-coverage-filtered-no-production-overwrite",
         "selection": {"metal": args.metal, "horizon": args.horizon},
         "results": {},
     }
