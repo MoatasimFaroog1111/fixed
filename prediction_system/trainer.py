@@ -44,6 +44,40 @@ class PredictionTrainingService:
                 continue
         return pd.concat(columns, axis=1, sort=False).sort_index() if columns else pd.DataFrame()
 
+    def train_horizon(
+        self,
+        security_id: str,
+        horizon: str,
+        hourly_context: pd.DataFrame | None = None,
+        daily_context: pd.DataFrame | None = None,
+    ) -> dict:
+        if horizon not in HORIZONS:
+            raise ValueError(f"Unsupported horizon: {horizon}")
+        hourly_context = hourly_context if hourly_context is not None else self._context_frame("hourly")
+        daily_context = daily_context if daily_context is not None else self._context_frame("daily")
+        prices = self._series(self.price_repository.hourly(security_id))
+        features = self.feature_builder.build(
+            prices,
+            hourly_context=hourly_context,
+            daily_context=daily_context,
+        )
+        steps = HORIZONS[horizon]
+        target = np.log(prices.shift(-steps) / prices).rename("target")
+        dataset = features.join(target).dropna()
+        X = dataset.drop(columns="target")
+        y = dataset["target"]
+        artifact = self.trainer.train(security_id, horizon, X, y)
+        path = self.artifact_repository.save(artifact)
+        return {
+            "security_id": security_id,
+            "horizon": horizon,
+            "path": str(path),
+            "training_samples": artifact.training_samples,
+            "feature_count": len(artifact.feature_names),
+            "validation_mae": artifact.validation_mae,
+            "confidence": artifact.confidence,
+        }
+
     def train_metal(
         self,
         security_id: str,
@@ -51,30 +85,15 @@ class PredictionTrainingService:
         hourly_context: pd.DataFrame,
         daily_context: pd.DataFrame,
     ) -> dict:
-        prices = self._series(self.price_repository.hourly(security_id))
-        features = self.feature_builder.build(
-            prices,
-            hourly_context=hourly_context,
-            daily_context=daily_context,
-        )
-        trained = []
-
-        for horizon, steps in HORIZONS.items():
-            target = np.log(prices.shift(-steps) / prices).rename("target")
-            dataset = features.join(target).dropna()
-            X = dataset.drop(columns="target")
-            y = dataset["target"]
-            artifact = self.trainer.train(security_id, horizon, X, y)
-            path = self.artifact_repository.save(artifact)
-            trained.append({
-                "horizon": horizon,
-                "path": str(path),
-                "training_samples": artifact.training_samples,
-                "feature_count": len(artifact.feature_names),
-                "validation_mae": artifact.validation_mae,
-                "confidence": artifact.confidence,
-            })
-
+        trained = [
+            self.train_horizon(
+                security_id,
+                horizon,
+                hourly_context=hourly_context,
+                daily_context=daily_context,
+            )
+            for horizon in HORIZONS
+        ]
         return {"metal": name, "security_id": security_id, "models": trained}
 
     def train_all(self) -> dict:
