@@ -6,20 +6,21 @@ URL='https://www.bullionvault.com/chart/bullionvaultchart.js?v=1'
 text=requests.get(URL,timeout=30,headers={'User-Agent':'Mozilla/5.0'}).text
 print('STATUS_CHARS',len(text))
 low=text.lower()
-for token in ('csv','export','download','getchart','chartdata','data.do','.do'):
+for token in ('pricescsvhost','/prices/csv/','updateinterval','timescale','timeframe'):
     print('\nTOKEN',token)
     start=0
     hits=0
-    while hits<20:
-        i=low.find(token,start)
+    while hits<40:
+        i=low.find(token.lower(),start)
         if i<0: break
-        print(text[max(0,i-500):min(len(text),i+800)].replace('\n',' '))
+        print(text[max(0,i-900):min(len(text),i+1600)].replace('\n',' '))
         print('\n---')
         start=i+len(token)
         hits+=1
 
-print('\nURL_STRINGS')
-for s in re.findall(r"['\"]([^'\"]{3,250})['\"]",text):
-    l=s.lower()
-    if any(k in l for k in ('csv','export','download','.do','chartdata','getchart')):
-        print(s)
+print('\nOBJECT_LIKE_TIME_SCALES')
+for m in re.finditer(r'updateInterval', text):
+    snippet=text[max(0,m.start()-1200):min(len(text),m.start()+1200)]
+    if any(tf in snippet for tf in ('10m','1h','6h','1d','1w','1m','1q','1y','5y','20y')):
+        print(snippet)
+        print('\n===')
