@@ -1,0 +1,35 @@
+name: Dukascopy Candidate Backtest
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'tools/backtest_dukascopy_candidate.py'
+      - '.github/workflows/dukascopy-candidate-backtest.yml'
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install numpy pandas scikit-learn
+      - name: Download verified Dukascopy dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate
+          github-token: ${{ github.token }}
+          run-id: 31881420255
+      - name: Run isolated 28-horizon backtest
+        run: python tools/backtest_dukascopy_candidate.py --candidate-dir dukascopy_h1_candidate --out candidate_backtest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-candidate-backtest
+          path: candidate_backtest.json
+          if-no-files-found: error
