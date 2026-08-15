@@ -20,8 +20,10 @@ LEGACY_DIR = Path("/home/moatasim/fixed")
 MODELS_DIR = BASE_DIR / "models"
 DATA_DIR   = BASE_DIR / "data"
 
-# عدد الـ features في v8 — إذا تغيّر يُعاد التدريب تلقائياً
-EXPECTED_FEATURE_COUNT = 80
+# عدد الـ features الفعلي في FeatureEngineer v8:
+# 3 نوافذ × 20 feature + 16 advanced features = 76.
+EXPECTED_FEATURE_COUNT = 76
+MODEL_SCHEMA_VERSION = "v8-76f-next-step-v1"
 METALS = ["AUXLN", "AGXLN", "PTXLN", "PDXLN"]
 
 
@@ -106,17 +108,32 @@ def _model_needs_retrain(security_id: str) -> bool:
     """
     يرجع True إذا:
       - النموذج غير موجود
-      - عدد الـ features لا يطابق v8 (80 feature)
+      - عدد الـ features لا يطابق FeatureEngineer v8 (76 feature)
+      - مخطط التدريب أقدم من المحاذاة الصحيحة i -> i+1
     """
     model_path  = MODELS_DIR / f"{security_id}_model.pkl"
     scaler_path = MODELS_DIR / f"{security_id}_scaler.pkl"
+    meta_path   = MODELS_DIR / f"{security_id}_meta.json"
 
-    if not model_path.exists() or not scaler_path.exists():
-        print(f"[TRAIN] {security_id}: نموذج غير موجود → يحتاج تدريب")
+    if not model_path.exists() or not scaler_path.exists() or not meta_path.exists():
+        print(f"[TRAIN] {security_id}: نموذج غير موجود أو بلا metadata → يحتاج تدريب")
         return True
 
-    # تحقق من عدد الـ features في الـ scaler
+    # تحقق من نسخة مخطط التدريب وعدد الخصائص.
     try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        if metadata.get("schema_version") != MODEL_SCHEMA_VERSION:
+            print(
+                f"[TRAIN] {security_id}: training schema قديمة "
+                f"({metadata.get('schema_version')}) ≠ {MODEL_SCHEMA_VERSION} → يحتاج تدريب"
+            )
+            return True
+        if metadata.get("feature_count") != EXPECTED_FEATURE_COUNT:
+            print(
+                f"[TRAIN] {security_id}: metadata features "
+                f"({metadata.get('feature_count')}) ≠ {EXPECTED_FEATURE_COUNT} → يحتاج تدريب"
+            )
+            return True
         with open(scaler_path, "rb") as f:
             scaler = pickle.load(f)
         n_features = getattr(scaler, "n_features_in_", None)
@@ -139,23 +156,30 @@ def auto_retrain_if_needed() -> None:
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
+    needs = [sid for sid in METALS if _model_needs_retrain(sid)]
+    if not needs:
+        print("[✅ TRAIN] جميع النماذج v8 جاهزة — لا حاجة لإعادة تدريب.")
+        return
+
     # تحقق هل يوجد بيانات للتدريب
     has_data = any(
         (DATA_DIR / f"{sid}_hourly.pkl").exists() or
         (DATA_DIR / f"{sid}_daily.pkl").exists()
-        for sid in METALS
+        for sid in needs
     )
 
     if not has_data:
         print(
-            "[TRAIN] لا توجد بيانات تاريخية — تخطي التدريب وسيعمل البوت بـ FallbackPredictor."
+            "[TRAIN] النماذج القديمة غير متوافقة ولا توجد بيانات تاريخية لإعادة التدريب. "
+            "سيعمل البوت بـ FallbackPredictor حتى تتوفر بيانات صحيحة."
         )
-        return
-
-    needs = [sid for sid in METALS if _model_needs_retrain(sid)]
-
-    if not needs:
-        print("[✅ TRAIN] جميع النماذج v8 جاهزة — لا حاجة لإعادة تدريب.")
+        for sid in needs:
+            for suffix in ("model.pkl", "scaler.pkl", "meta.json"):
+                path = MODELS_DIR / f"{sid}_{suffix}"
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception as exc:
+                    print(f"WARNING: could not remove incompatible artifact {path}: {exc}")
         return
 
     print(f"[TRAIN] تدريب مطلوب لـ: {needs}")
