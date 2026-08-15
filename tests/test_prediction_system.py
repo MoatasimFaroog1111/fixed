@@ -5,6 +5,7 @@ from sklearn.dummy import DummyRegressor
 from prediction_system.artifacts import PersistedForecastModel, PickleForecastArtifactRepository
 from prediction_system.features import FeatureBuilder
 from prediction_system.service import PredictionService
+from prediction_system.units import PriceUnitConverter, TROY_OUNCES_PER_KILOGRAM
 
 
 def test_features_are_past_only_and_finite_after_warmup():
@@ -39,6 +40,12 @@ def test_cross_asset_and_daily_context_are_included():
 def test_required_horizons_exist():
     from prediction_system.config import HORIZONS
     assert list(HORIZONS) == ["6h", "12h", "18h", "24h", "48h", "1w", "1m"]
+
+
+def test_usd_per_troy_ounce_is_converted_to_usd_per_kg():
+    converter = PriceUnitConverter()
+    assert converter.usd_per_troy_ounce_to_usd_per_kg(1.0) == TROY_OUNCES_PER_KILOGRAM
+    assert round(converter.usd_per_troy_ounce_to_usd_per_kg(4696.18), 2) == 150993.67
 
 
 def test_persisted_artifact_round_trip(tmp_path):
