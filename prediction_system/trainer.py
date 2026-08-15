@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from .artifacts import ForecastArtifactRepository, PickleForecastArtifactRepository
 from .config import HORIZONS, METALS
 from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
 from .model import HorizonTrainer, WalkForwardEnsembleTrainer
+from .targets import HorizonTargetBuilder, TimeAwareHorizonTargetBuilder
 
 
 class PredictionTrainingService:
@@ -20,11 +20,13 @@ class PredictionTrainingService:
         artifact_repository: ForecastArtifactRepository | None = None,
         feature_builder: FeatureBuilder | None = None,
         trainer: HorizonTrainer | None = None,
+        target_builder: HorizonTargetBuilder | None = None,
     ):
         self.price_repository = price_repository or PicklePriceRepository()
         self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
         self.feature_builder = feature_builder or FeatureBuilder()
         self.trainer = trainer or WalkForwardEnsembleTrainer()
+        self.target_builder = target_builder or TimeAwareHorizonTargetBuilder()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
@@ -61,8 +63,7 @@ class PredictionTrainingService:
             hourly_context=hourly_context,
             daily_context=daily_context,
         )
-        steps = HORIZONS[horizon]
-        target = np.log(prices.shift(-steps) / prices).rename("target")
+        target = self.target_builder.build(prices, HORIZONS[horizon])
         dataset = features.join(target).dropna()
         X = dataset.drop(columns="target")
         y = dataset["target"]
