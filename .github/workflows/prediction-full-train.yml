@@ -11,9 +11,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  full-training:
+  train:
+    name: train-${{ matrix.security_id }}-${{ matrix.horizon }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        security_id: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [6h, 12h, 18h, 24h, 48h, 1w, 1m]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,8 +28,34 @@ jobs:
           cache: 'pip'
       - name: Install training dependencies
         run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn
-      - name: Train all production horizons
-        run: python train_prediction_models.py
+      - name: Train production horizon
+        run: python train_prediction_models.py --security-id '${{ matrix.security_id }}' --horizon '${{ matrix.horizon }}'
+      - name: Upload horizon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ matrix.security_id }}-${{ matrix.horizon }}
+          path: prediction_models/${{ matrix.security_id }}_${{ matrix.horizon }}.pkl
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-and-package:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install serving dependencies
+        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn
+      - name: Download all trained horizons
+        uses: actions/download-artifact@v4
+        with:
+          pattern: model-*
+          path: prediction_models
+          merge-multiple: true
       - name: Verify all persisted models
         run: |
           python - <<'PY'
