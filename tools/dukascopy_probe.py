@@ -8,8 +8,8 @@ import requests
 
 BASE_URL = "https://freeserv.dukascopy.com/2.0/"
 TARGET_TOKENS = {
-    "gold": ["XAU/USD", "XAUUSD"],
-    "silver": ["XAG/USD", "XAGUSD"],
+    "gold": ["XAU/USD", "XAUUSD", "GOLD"],
+    "silver": ["XAG/USD", "XAGUSD", "SILVER"],
     "platinum": ["XPT", "PLATINUM"],
     "palladium": ["XPD", "PALLADIUM"],
 }
@@ -26,15 +26,37 @@ def get_json(params: dict) -> tuple[int, object]:
     return response.status_code, payload
 
 
+def collect_instrument_dicts(node: object, out: list[dict]) -> None:
+    if isinstance(node, dict):
+        if "id" in node and any(k in node for k in ("name", "nameLong", "symbol", "instrument")):
+            out.append(node)
+        for value in node.values():
+            collect_instrument_dicts(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            collect_instrument_dicts(value, out)
+
+
 def normalize_instruments(payload: object) -> list[dict]:
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
+    found: list[dict] = []
+    collect_instrument_dicts(payload, found)
+    seen = set()
+    unique = []
+    for item in found:
+        key = (str(item.get("id")), str(item.get("name")), str(item.get("nameLong")))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def raw_shape(payload: object) -> dict:
     if isinstance(payload, dict):
-        for key in ("data", "instruments", "result"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    return []
+        return {"type": "dict", "keys": list(payload.keys())[:30], "preview": str(payload)[:1000]}
+    if isinstance(payload, list):
+        return {"type": "list", "length": len(payload), "preview": str(payload[:3])[:1000]}
+    return {"type": type(payload).__name__, "preview": str(payload)[:1000]}
 
 
 def searchable_text(item: dict) -> str:
@@ -42,12 +64,7 @@ def searchable_text(item: dict) -> str:
 
 
 def find_candidates(instruments: list[dict], tokens: list[str]) -> list[dict]:
-    matches = []
-    for item in instruments:
-        text = searchable_text(item)
-        if any(token.upper() in text for token in tokens):
-            matches.append(item)
-    return matches
+    return [item for item in instruments if any(token.upper() in searchable_text(item) for token in tokens)]
 
 
 def historical_sample(instrument_id: int | str) -> dict:
@@ -61,7 +78,7 @@ def historical_sample(instrument_id: int | str) -> dict:
         "dayStartTime": "UTC",
         "offerSide": "B",
     })
-    result = {"http_status": status}
+    result = {"http_status": status, "payload_type": type(payload).__name__}
     if isinstance(payload, list):
         result["rows"] = len(payload)
         result["sample_first"] = payload[:2]
@@ -77,9 +94,13 @@ def main() -> None:
         "fields": "id,name,pipValue,nameLong",
     })
     instruments = normalize_instruments(raw)
+    shape = raw_shape(raw)
+    print(json.dumps({"instrument_list_http_status": status, "shape": shape, "normalized_count": len(instruments)}, ensure_ascii=False))
+
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "instrument_list_http_status": status,
+        "raw_shape": shape,
         "instrument_count": len(instruments),
         "targets": {},
     }
@@ -90,11 +111,7 @@ def main() -> None:
             {k: item.get(k) for k in ("id", "name", "nameLong", "pipValue") if k in item}
             for item in candidates[:10]
         ]
-        target = {
-            "search_tokens": tokens,
-            "catalog_matches": compact,
-            "h1_samples": [],
-        }
+        target = {"search_tokens": tokens, "catalog_matches": compact, "h1_samples": []}
         for item in candidates[:3]:
             instrument_id = item.get("id")
             if instrument_id is None:
@@ -106,9 +123,7 @@ def main() -> None:
         report["targets"][metal] = target
         print(json.dumps({metal: target}, ensure_ascii=False))
 
-    Path("dukascopy_probe_report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    Path("dukascopy_probe_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 if __name__ == "__main__":
