@@ -1,8 +1,10 @@
+import inspect
 import numpy as np
 import pandas as pd
+from sklearn.dummy import DummyRegressor
+from prediction_system.artifacts import PersistedForecastModel, PickleForecastArtifactRepository
 from prediction_system.features import FeatureBuilder
-
-# CI trigger marker: validates PR pipeline against the repository's real datasets.
+from prediction_system.service import PredictionService
 
 
 def test_features_are_past_only_and_finite_after_warmup():
@@ -37,3 +39,32 @@ def test_cross_asset_and_daily_context_are_included():
 def test_required_horizons_exist():
     from prediction_system.config import HORIZONS
     assert list(HORIZONS) == ["6h", "12h", "18h", "24h", "48h", "1w", "1m"]
+
+
+def test_persisted_artifact_round_trip(tmp_path):
+    X = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    y = np.array([0.01, 0.02, 0.03])
+    model = DummyRegressor(strategy="mean").fit(X, y)
+    artifact = PersistedForecastModel(
+        security_id="AUXLN",
+        horizon="6h",
+        feature_names=("a", "b"),
+        models=(model,),
+        weights=(1.0,),
+        validation_mae=0.01,
+        confidence=0.8,
+        training_samples=3,
+        trained_at="2026-08-15T00:00:00+00:00",
+    )
+    repository = PickleForecastArtifactRepository(str(tmp_path))
+    repository.save(artifact)
+    loaded = repository.load("AUXLN", "6h")
+    assert loaded.feature_names == ("a", "b")
+    assert np.isfinite(loaded.predict_return(X.iloc[[-1]]))
+
+
+def test_online_service_has_no_training_dependency():
+    source = inspect.getsource(PredictionService)
+    assert ".fit(" not in source
+    assert "WalkForwardEnsembleTrainer" not in source
+    assert "PredictionTrainingService" not in source
