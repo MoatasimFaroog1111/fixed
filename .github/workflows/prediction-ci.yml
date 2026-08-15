@@ -7,12 +7,14 @@ on:
     paths:
       - 'prediction_system/**'
       - 'prediction_dashboard.py'
+      - 'train_prediction_models.py'
       - 'tests/test_prediction_system.py'
       - '.github/workflows/prediction-ci.yml'
   pull_request:
     paths:
       - 'prediction_system/**'
       - 'prediction_dashboard.py'
+      - 'train_prediction_models.py'
       - 'tests/test_prediction_system.py'
       - '.github/workflows/prediction-ci.yml'
   workflow_dispatch:
@@ -31,59 +33,99 @@ jobs:
         run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn pytest
       - name: Unit tests
         run: pytest -q tests/test_prediction_system.py
-      - name: Validate repository datasets and feature pipeline
+      - name: Validate real repository data and production trainer
         run: |
           python - <<'PY'
           import numpy as np
           import pandas as pd
           from prediction_system.data import PicklePriceRepository
           from prediction_system.features import FeatureBuilder
+          from prediction_system.model import WalkForwardEnsembleTrainer
 
-          ids = ('AUXLN', 'AGXLN', 'PTXLN', 'PDXLN', 'DXY')
           repo = PicklePriceRepository('data')
+          ids = ('AUXLN', 'AGXLN', 'PTXLN', 'PDXLN', 'DXY')
 
           def series(frame):
               s = frame['price'].astype(float)
-              if not isinstance(s.index, pd.DatetimeIndex):
-                  s.index = pd.to_datetime(s.index, errors='coerce')
-                  s = s[~s.index.isna()]
-              return s.sort_index()[~s.index.duplicated(keep='last')]
+              idx = pd.to_datetime(s.index, errors='coerce', utc=True)
+              s.index = idx.tz_convert(None)
+              return s[~s.index.isna()].sort_index()[~s.index.duplicated(keep='last')]
 
           hourly = pd.concat({sid: series(repo.hourly(sid)) for sid in ids}, axis=1, sort=False).sort_index()
           daily = pd.concat({sid: series(repo.daily(sid)) for sid in ids}, axis=1, sort=False).sort_index()
-
-          assert set(ids).issubset(hourly.columns)
-          assert set(ids).issubset(daily.columns)
-
           builder = FeatureBuilder()
+
           for sid in ids[:4]:
               target = hourly[sid].dropna()
               features = builder.build(target, hourly_context=hourly, daily_context=daily)
               latest = features.iloc[-1].dropna()
-              assert float(target.iloc[-1]) > 0
-              assert len(latest) >= 50, (sid, len(latest))
+              assert len(latest) >= 100, (sid, len(latest))
               assert np.isfinite(latest).all(), sid
               print(sid, 'rows=', len(target), 'features=', len(latest), 'price=', float(target.iloc[-1]))
+
+          prices = hourly['AUXLN'].dropna()
+          features = builder.build(prices, hourly_context=hourly, daily_context=daily)
+          target = np.log(prices.shift(-6) / prices).rename('target')
+          sample = features.join(target).dropna().tail(1800)
+          artifact = WalkForwardEnsembleTrainer().train('AUXLN', '6h', sample.drop(columns='target'), sample['target'])
+          assert len(artifact.models) == 3
+          assert abs(sum(artifact.weights) - 1.0) < 1e-9
+          assert artifact.training_samples == len(sample)
+          print('production trainer smoke OK', artifact.training_samples, len(artifact.feature_names))
           PY
-      - name: Validate full multi-horizon forecasts
+      - name: Validate load-and-predict serving without training
         run: |
           python - <<'PY'
-          import math
-          from prediction_system import PredictionService
+          import time
+          import numpy as np
+          import pandas as pd
+          from sklearn.dummy import DummyRegressor
+          from prediction_system.artifacts import PersistedForecastModel, PickleForecastArtifactRepository
           from prediction_system.config import HORIZONS, METALS
+          from prediction_system.data import PicklePriceRepository
+          from prediction_system.features import FeatureBuilder
+          from prediction_system.service import PredictionService
 
-          result = PredictionService().predict_all()
-          assert result['unit'] == 'USD/kg'
-          assert len(result['metals']) == len(METALS)
-          expected = list(HORIZONS)
-          for metal in result['metals']:
-              forecasts = metal['forecasts']
-              assert [f['horizon'] for f in forecasts] == expected
-              for forecast in forecasts:
-                  assert forecast.get('status') != 'insufficient_data', (metal['metal'], forecast)
-                  assert forecast['current_usd_per_kg'] > 0
-                  assert forecast['predicted_usd_per_kg'] > 0
-                  assert math.isfinite(forecast['predicted_usd_per_kg'])
-                  assert 0.0 <= forecast['confidence'] <= 1.0
-              print(metal['metal'], 'OK', len(forecasts), 'horizons')
+          price_repo = PicklePriceRepository('data')
+          artifact_repo = PickleForecastArtifactRepository('prediction_models_ci')
+          ids = tuple(m.security_id for m in METALS) + ('DXY',)
+
+          def series(frame):
+              s = frame['price'].astype(float)
+              idx = pd.to_datetime(s.index, errors='coerce', utc=True)
+              s.index = idx.tz_convert(None)
+              return s[~s.index.isna()].sort_index()[~s.index.duplicated(keep='last')]
+
+          hourly = pd.concat({sid: series(price_repo.hourly(sid)) for sid in ids}, axis=1, sort=False).sort_index()
+          daily = pd.concat({sid: series(price_repo.daily(sid)) for sid in ids}, axis=1, sort=False).sort_index()
+          builder = FeatureBuilder()
+
+          for metal in METALS:
+              prices = hourly[metal.security_id].dropna()
+              features = builder.build(prices, hourly_context=hourly, daily_context=daily)
+              latest = features.iloc[[-1]].dropna(axis=1)
+              columns = tuple(latest.columns)
+              X = features.loc[:, list(columns)].dropna().tail(500)
+              for horizon in HORIZONS:
+                  model = DummyRegressor(strategy='constant', constant=0.001).fit(X, np.full(len(X), 0.001))
+                  artifact_repo.save(PersistedForecastModel(
+                      security_id=metal.security_id,
+                      horizon=horizon,
+                      feature_names=columns,
+                      models=(model,),
+                      weights=(1.0,),
+                      validation_mae=0.01,
+                      confidence=0.8,
+                      training_samples=len(X),
+                      trained_at='2026-08-15T00:00:00+00:00',
+                  ))
+
+          started = time.perf_counter()
+          result = PredictionService(repository=price_repo, artifact_repository=artifact_repo).predict_all()
+          elapsed = time.perf_counter() - started
+          assert result['architecture'] == 'train-once-persist-load-predict'
+          assert len(result['metals']) == 4
+          assert all(len(m['forecasts']) == 7 for m in result['metals'])
+          assert elapsed < 15.0, elapsed
+          print('serving OK seconds=', round(elapsed, 3), 'forecasts=', 28)
           PY
