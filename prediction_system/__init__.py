@@ -1,4 +1,5 @@
-"""SOLID multi-horizon precious-metal price forecasting package."""
+"""SOLID multi-horizon precious-metal forecasting package."""
 from .service import PredictionService
+from .trainer import PredictionTrainingService
 
-__all__ = ["PredictionService"]
+__all__ = ["PredictionService", "PredictionTrainingService"]
