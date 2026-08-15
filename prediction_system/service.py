@@ -18,9 +18,10 @@ class PredictionService:
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
         s = frame["price"].astype(float)
-        if not isinstance(s.index, pd.DatetimeIndex):
-            s.index = pd.to_datetime(s.index, errors="coerce")
-            s = s[~s.index.isna()]
+        idx = pd.to_datetime(s.index, errors="coerce", utc=True)
+        valid = ~idx.isna()
+        s = s[valid].copy()
+        s.index = idx[valid].tz_convert(None)
         return s.sort_index()[~s.index.duplicated(keep="last")]
 
     def _context_frame(self, frequency: str) -> pd.DataFrame:
@@ -33,7 +34,7 @@ class PredictionService:
                 continue
         if not columns:
             return pd.DataFrame()
-        return pd.concat(columns, axis=1).sort_index()
+        return pd.concat(columns, axis=1, sort=False).sort_index()
 
     def predict_metal(
         self,
