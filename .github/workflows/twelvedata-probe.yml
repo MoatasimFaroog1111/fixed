@@ -1,0 +1,33 @@
+name: Twelve Data 5Y Hourly Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/multi-horizon-price-forecast
+    paths:
+      - tools/twelvedata_probe.py
+      - .github/workflows/twelvedata-probe.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests pandas
+      - name: Probe five years of hourly commodity data
+        run: python tools/twelvedata_probe.py
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twelvedata-probe-report
+          path: twelvedata_probe_report.json
+          if-no-files-found: warn
