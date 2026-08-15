@@ -34,7 +34,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: model-${{ matrix.security_id }}-${{ matrix.horizon }}
-          path: prediction_models/${{ matrix.security_id }}_${{ matrix.horizon }}.pkl
+          path: prediction_models/${{ matrix.security_id }}/${{ matrix.horizon }}.pkl
           if-no-files-found: error
           retention-days: 30
 
@@ -54,8 +54,25 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: model-*
-          path: prediction_models
-          merge-multiple: true
+          path: downloaded-models
+      - name: Assemble production model directory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          from prediction_system.config import METALS, HORIZONS
+
+          source = Path('downloaded-models')
+          target = Path('prediction_models')
+          for metal in METALS:
+              for horizon in HORIZONS:
+                  src_dir = source / f'model-{metal.security_id}-{horizon}'
+                  candidates = list(src_dir.rglob('*.pkl'))
+                  assert len(candidates) == 1, (src_dir, candidates)
+                  dst = target / metal.security_id / f'{horizon}.pkl'
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(candidates[0], dst)
+          PY
       - name: Verify all persisted models
         run: |
           python - <<'PY'
@@ -75,7 +92,7 @@ jobs:
                   assert len(artifact.feature_names) >= 100
                   assert artifact.training_samples >= 250
                   loaded += 1
-          files = list(Path('prediction_models').glob('*.pkl'))
+          files = list(Path('prediction_models').rglob('*.pkl'))
           assert loaded == expected, (loaded, expected)
           assert len(files) == expected, (len(files), expected)
           print('verified persisted models=', loaded)
