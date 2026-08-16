@@ -15,7 +15,12 @@ from prediction_system.long_horizon_features import LongHorizonFeatureBuilder
 from prediction_system.model import LongHorizonEnsembleTrainer
 from prediction_system.model_selection import ModelCandidate, PurgedLongHorizonModelSelector
 from prediction_system.trainer import PredictionTrainingService
-from tools.backtest_dukascopy_candidate import CandidateRepository, _filter_context
+from tools.backtest_dukascopy_candidate import (
+    CandidateRepository,
+    _filter_context,
+    _filter_features,
+    _warmup_rows,
+)
 
 
 def _predict(artifact, X: pd.DataFrame) -> np.ndarray:
@@ -31,9 +36,14 @@ def _build_candidates(repo: CandidateRepository, security_id: str, horizon: str)
     daily_context, coverage = _filter_context(service._context_frame("daily"), prices.index, "daily")
     target = DailyLongHorizonTargetBuilder().build(prices, horizon)
 
-    hourly_features = LongHorizonFeatureBuilder().build(
+    hourly_builder = LongHorizonFeatureBuilder()
+    raw_hourly_features = hourly_builder.build(
         prices, hourly_context=hourly_context, daily_context=daily_context
-    ).resample("1D").last()
+    )
+    filtered_hourly_features, kept_hourly_columns, dropped_hourly_columns = _filter_features(
+        raw_hourly_features, _warmup_rows(hourly_builder)
+    )
+    hourly_features = filtered_hourly_features.resample("1D").last()
     hourly_dataset = hourly_features.join(target).dropna().sort_index()
 
     daily_features = DailyRegimeFeatureBuilder().build(prices, daily_context=daily_context)
@@ -43,11 +53,15 @@ def _build_candidates(repo: CandidateRepository, security_id: str, horizon: str)
         ModelCandidate("hourly-long", hourly_dataset, LongHorizonEnsembleTrainer()),
         ModelCandidate("daily-regime", daily_dataset, DailyRegimeEnsembleTrainer()),
     )
-    return candidates, target.dropna().index.sort_values(), coverage
+    diagnostics = {
+        "hourly_long_kept_features": int(len(kept_hourly_columns)),
+        "hourly_long_dropped_features": int(len(dropped_hourly_columns)),
+    }
+    return candidates, target.dropna().index.sort_values(), coverage, diagnostics
 
 
 def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: int = 3, test_size: int = 120) -> dict:
-    candidates, timeline, coverage = _build_candidates(repo, security_id, horizon)
+    candidates, timeline, coverage, diagnostics = _build_candidates(repo, security_id, horizon)
     purge_days = DailyLongHorizonTargetBuilder.DAYS[horizon]
     selector = PurgedLongHorizonModelSelector(
         validation_days=120,
@@ -119,6 +133,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
             "horizon": horizon,
             "timeline_rows": int(len(timeline)),
             "candidate_rows": candidate_rows,
+            **diagnostics,
         }
 
     direction = np.asarray([r["direction_accuracy"] for r in results])
@@ -134,6 +149,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
         "fold_count": len(results),
         "timeline_rows": int(len(timeline)),
         "candidate_rows": candidate_rows,
+        **diagnostics,
         "test_samples_total": int(sum(r["test_samples"] for r in results)),
         "direction_accuracy_mean": float(direction.mean()),
         "direction_accuracy_min": float(direction.min()),
