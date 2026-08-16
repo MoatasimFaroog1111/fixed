@@ -15,10 +15,12 @@ jobs:
   daily-regime:
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
         metal: [AUXLN, AGXLN, PTXLN, PDXLN]
         horizon: [1w, 1m]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.metal }}-${{ matrix.horizon }}-daily-regime
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,22 +29,26 @@ jobs:
       - name: Install dependencies
         run: pip install numpy pandas scikit-learn requests
       - name: Download verified Dukascopy dataset artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: actions/download-artifact@v4
         with:
-          workflow: dukascopy-candidate-data.yml
-          name: dukascopy-candidate-data
-          path: candidate_data
-          search_artifacts: true
-          if_no_artifact_found: fail
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 31881420255
       - name: Run daily regime purged walk-forward
-        run: |
-          PYTHONPATH=. python tools/backtest_daily_regime.py \
-            --candidate-dir candidate_data \
-            --metal ${{ matrix.metal }} \
-            --horizon ${{ matrix.horizon }} \
-            --out daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python tools/backtest_daily_regime.py
+          --candidate-dir dukascopy_h1_candidate
+          --metal ${{ matrix.metal }}
+          --horizon ${{ matrix.horizon }}
+          --folds 4
+          --test-size 180
+          --out daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
       - name: Upload daily regime result
         uses: actions/upload-artifact@v4
         with:
           name: daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}
           path: daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
+          if-no-files-found: error
