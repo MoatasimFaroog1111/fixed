@@ -14,6 +14,7 @@ from tools.backtest_dukascopy_candidate import (
     CandidateRepository,
     _filter_context,
     _filter_features,
+    _warmup_rows,
 )
 
 
@@ -24,7 +25,7 @@ def evaluate_folded(repo: CandidateRepository, security_id: str, horizon: str, f
     daily_context, _ = _filter_context(service._context_frame("daily"), prices.index, "daily")
     builder = service.feature_policy.for_horizon(horizon)
     raw_features = builder.build(prices, hourly_context=hourly_context, daily_context=daily_context)
-    features, _, _ = _filter_features(raw_features)
+    features, _, _ = _filter_features(raw_features, _warmup_rows(builder))
     target = service.target_builder.build(prices, HORIZONS[horizon])
     dataset = features.join(target).dropna()
     trainer = service.trainer_policy.for_horizon(horizon)
