@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
 import numpy as np
-from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor, HistGradientBoostingRegressor
+from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor, HistGradientBoostingRegressor, RandomForestRegressor, GradientBoostingRegressor, RandomForestRegressor, StackingRegressor, RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from .artifacts import PersistedForecastModel
 
@@ -18,35 +18,12 @@ class HorizonTrainer(Protocol):
     def train(self, security_id: str, horizon: str, X, y) -> PersistedForecastModel: ...
 
 
-class WalkForwardEnsembleTrainer:
-    """Offline trainer with time-ordered validation and error-weighted ensemble."""
-
+class _BaseEnsembleTrainer:
     def __init__(self, random_state: int = 42):
         self.random_state = random_state
 
     def _factories(self):
-        return (
-            lambda: ExtraTreesRegressor(
-                n_estimators=350,
-                min_samples_leaf=3,
-                max_features=0.8,
-                n_jobs=-1,
-                random_state=self.random_state,
-            ),
-            lambda: RandomForestRegressor(
-                n_estimators=300,
-                min_samples_leaf=4,
-                max_features=0.75,
-                n_jobs=-1,
-                random_state=self.random_state + 1,
-            ),
-            lambda: HistGradientBoostingRegressor(
-                max_iter=300,
-                learning_rate=0.035,
-                l2_regularization=1.0,
-                random_state=self.random_state + 2,
-            ),
-        )
+        raise NotImplementedError
 
     def train(self, security_id: str, horizon: str, X, y) -> PersistedForecastModel:
         n = len(X)
@@ -83,4 +60,62 @@ class WalkForwardEnsembleTrainer:
             confidence=confidence,
             training_samples=int(n),
             trained_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+class WalkForwardEnsembleTrainer(_BaseEnsembleTrainer):
+    """Short/medium horizon ensemble optimized for 6h through 48h."""
+
+    def _factories(self):
+        return (
+            lambda: ExtraTreesRegressor(
+                n_estimators=350,
+                min_samples_leaf=3,
+                max_features=0.8,
+                n_jobs=-1,
+                random_state=self.random_state,
+            ),
+            lambda: RandomForestRegressor(
+                n_estimators=300,
+                min_samples_leaf=4,
+                max_features=0.75,
+                n_jobs=-1,
+                random_state=self.random_state + 1,
+            ),
+            lambda: HistGradientBoostingRegressor(
+                max_iter=300,
+                learning_rate=0.035,
+                l2_regularization=1.0,
+                random_state=self.random_state + 2,
+            ),
+        )
+
+
+class LongHorizonEnsembleTrainer(_BaseEnsembleTrainer):
+    """Regularized, smoother ensemble dedicated to 1-week and 1-month targets."""
+
+    def _factories(self):
+        return (
+            lambda: ExtraTreesRegressor(
+                n_estimators=500,
+                min_samples_leaf=12,
+                max_features=0.55,
+                n_jobs=-1,
+                random_state=self.random_state + 10,
+            ),
+            lambda: RandomForestRegressor(
+                n_estimators=450,
+                min_samples_leaf=16,
+                max_features=0.50,
+                n_jobs=-1,
+                random_state=self.random_state + 11,
+            ),
+            lambda: HistGradientBoostingRegressor(
+                max_iter=400,
+                learning_rate=0.02,
+                max_leaf_nodes=15,
+                min_samples_leaf=30,
+                l2_regularization=3.0,
+                random_state=self.random_state + 12,
+            ),
         )
