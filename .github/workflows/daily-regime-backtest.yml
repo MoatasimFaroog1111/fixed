@@ -44,7 +44,8 @@ jobs:
           --metal ${{ matrix.metal }}
           --horizon ${{ matrix.horizon }}
           --folds 4
-          --test-size 180
+          --test-size 120
+          --min-train-size 500
           --out daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
       - name: Upload daily regime result
         uses: actions/upload-artifact@v4
