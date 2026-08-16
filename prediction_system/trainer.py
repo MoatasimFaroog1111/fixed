@@ -5,7 +5,8 @@ from .artifacts import ForecastArtifactRepository, PickleForecastArtifactReposit
 from .config import HORIZONS, METALS
 from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
-from .model import HorizonTrainer, WalkForwardEnsembleTrainer
+from .feature_policy import AdaptiveHorizonFeaturePolicy, HorizonFeaturePolicy
+from .model import HorizonTrainer
 from .targets import HorizonTargetBuilder, TimeAwareHorizonTargetBuilder
 from .trainer_policy import AdaptiveHorizonTrainerPolicy, HorizonTrainerPolicy
 
@@ -23,10 +24,10 @@ class PredictionTrainingService:
         trainer: HorizonTrainer | None = None,
         target_builder: HorizonTargetBuilder | None = None,
         trainer_policy: HorizonTrainerPolicy | None = None,
+        feature_policy: HorizonFeaturePolicy | None = None,
     ):
         self.price_repository = price_repository or PicklePriceRepository()
         self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
-        self.feature_builder = feature_builder or FeatureBuilder()
         self.target_builder = target_builder or TimeAwareHorizonTargetBuilder()
         if trainer_policy is not None:
             self.trainer_policy = trainer_policy
@@ -34,6 +35,12 @@ class PredictionTrainingService:
             self.trainer_policy = AdaptiveHorizonTrainerPolicy(trainer, trainer)
         else:
             self.trainer_policy = AdaptiveHorizonTrainerPolicy.default()
+        if feature_policy is not None:
+            self.feature_policy = feature_policy
+        elif feature_builder is not None:
+            self.feature_policy = AdaptiveHorizonFeaturePolicy(feature_builder, feature_builder)
+        else:
+            self.feature_policy = AdaptiveHorizonFeaturePolicy.default()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
@@ -65,7 +72,8 @@ class PredictionTrainingService:
         hourly_context = hourly_context if hourly_context is not None else self._context_frame("hourly")
         daily_context = daily_context if daily_context is not None else self._context_frame("daily")
         prices = self._series(self.price_repository.hourly(security_id))
-        features = self.feature_builder.build(
+        feature_builder = self.feature_policy.for_horizon(horizon)
+        features = feature_builder.build(
             prices,
             hourly_context=hourly_context,
             daily_context=daily_context,
@@ -86,22 +94,12 @@ class PredictionTrainingService:
             "validation_mae": artifact.validation_mae,
             "confidence": artifact.confidence,
             "trainer": type(trainer).__name__,
+            "feature_builder": type(feature_builder).__name__,
         }
 
-    def train_metal(
-        self,
-        security_id: str,
-        name: str,
-        hourly_context: pd.DataFrame,
-        daily_context: pd.DataFrame,
-    ) -> dict:
+    def train_metal(self, security_id: str, name: str, hourly_context: pd.DataFrame, daily_context: pd.DataFrame) -> dict:
         trained = [
-            self.train_horizon(
-                security_id,
-                horizon,
-                hourly_context=hourly_context,
-                daily_context=daily_context,
-            )
+            self.train_horizon(security_id, horizon, hourly_context=hourly_context, daily_context=daily_context)
             for horizon in HORIZONS
         ]
         return {"metal": name, "security_id": security_id, "models": trained}
@@ -110,12 +108,7 @@ class PredictionTrainingService:
         hourly_context = self._context_frame("hourly")
         daily_context = self._context_frame("daily")
         results = [
-            self.train_metal(
-                metal.security_id,
-                metal.name,
-                hourly_context=hourly_context,
-                daily_context=daily_context,
-            )
+            self.train_metal(metal.security_id, metal.name, hourly_context=hourly_context, daily_context=daily_context)
             for metal in METALS
         ]
         return {
