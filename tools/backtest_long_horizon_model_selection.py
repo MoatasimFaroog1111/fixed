@@ -34,34 +34,40 @@ def _build_candidates(repo: CandidateRepository, security_id: str, horizon: str)
     hourly_features = LongHorizonFeatureBuilder().build(
         prices, hourly_context=hourly_context, daily_context=daily_context
     ).resample("1D").last()
-    hourly_dataset = hourly_features.join(target).dropna()
+    hourly_dataset = hourly_features.join(target).dropna().sort_index()
 
     daily_features = DailyRegimeFeatureBuilder().build(prices, daily_context=daily_context)
-    daily_dataset = daily_features.join(target).dropna()
+    daily_dataset = daily_features.join(target).dropna().sort_index()
 
     candidates = (
         ModelCandidate("hourly-long", hourly_dataset, LongHorizonEnsembleTrainer()),
         ModelCandidate("daily-regime", daily_dataset, DailyRegimeEnsembleTrainer()),
     )
-    common_index = hourly_dataset.index.intersection(daily_dataset.index).sort_values()
-    return candidates, common_index, coverage
+    return candidates, target.dropna().index.sort_values(), coverage
 
 
 def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: int = 3, test_size: int = 120) -> dict:
-    candidates, common_index, coverage = _build_candidates(repo, security_id, horizon)
+    candidates, timeline, coverage = _build_candidates(repo, security_id, horizon)
     purge_days = DailyLongHorizonTargetBuilder.DAYS[horizon]
-    selector = PurgedLongHorizonModelSelector(validation_size=90, min_fit_size=500, mae_penalty=0.10)
+    selector = PurgedLongHorizonModelSelector(
+        validation_days=120,
+        min_fit_size=500,
+        min_validation_samples=60,
+        mae_penalty=0.10,
+    )
     results = []
 
     for fold in range(folds):
-        test_end = len(common_index) - fold * test_size
+        test_end = len(timeline) - fold * test_size
         test_start = test_end - test_size
         if test_start <= 0:
             break
-        test_index = common_index[test_start:test_end]
-        if len(test_index) < 60:
+        period = timeline[test_start:test_end]
+        if len(period) < 60:
             continue
-        outer_test_start = test_index[0]
+        outer_test_start = pd.Timestamp(period[0])
+        outer_test_end = pd.Timestamp(period[-1])
+
         try:
             selection = selector.select(candidates, security_id, horizon, outer_test_start, purge_days)
         except ValueError:
@@ -70,9 +76,12 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
         winner = selection.winner
         cutoff = outer_test_start - pd.Timedelta(days=purge_days)
         train = winner.dataset.loc[winner.dataset.index < cutoff].dropna()
-        test = winner.dataset.loc[winner.dataset.index.intersection(test_index)].dropna()
+        test = winner.dataset.loc[
+            (winner.dataset.index >= outer_test_start) & (winner.dataset.index <= outer_test_end)
+        ].dropna()
         if len(train) < 500 or len(test) < 60:
             continue
+
         Xtr, ytr = train.drop(columns="target"), train["target"]
         Xte, yte = test.drop(columns="target"), test["target"]
         artifact = winner.trainer.train(security_id, horizon, Xtr, ytr)
@@ -95,30 +104,36 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
                     "normalized_mae": s.normalized_mae,
                     "score": s.score,
                     "validation_samples": s.validation_samples,
+                    "validation_start": s.validation_start,
+                    "validation_end": s.validation_end,
                 }
                 for s in selection.scores
             ],
         })
 
+    candidate_rows = {candidate.name: int(len(candidate.dataset)) for candidate in candidates}
     if not results:
         return {
             "status": "insufficient_data",
             "metal": security_id,
             "horizon": horizon,
-            "common_daily_rows": int(len(common_index)),
+            "timeline_rows": int(len(timeline)),
+            "candidate_rows": candidate_rows,
         }
 
     direction = np.asarray([r["direction_accuracy"] for r in results])
-    winners = {name: sum(r["winner"] == name for r in results) for name in ("hourly-long", "daily-regime")}
+    winners = {name: sum(r["winner"] == name for r in results) for name in candidate_rows}
     return {
         "status": "ok",
         "metal": security_id,
         "horizon": horizon,
-        "architecture": "nested-purged-per-metal-model-selection",
+        "architecture": "nested-purged-calendar-aligned-model-selection",
         "purge_days": purge_days,
-        "inner_validation_days": 90,
-        "outer_test_days": test_size,
+        "inner_validation_calendar_days": 120,
+        "outer_test_points": test_size,
         "fold_count": len(results),
+        "timeline_rows": int(len(timeline)),
+        "candidate_rows": candidate_rows,
         "test_samples_total": int(sum(r["test_samples"] for r in results)),
         "direction_accuracy_mean": float(direction.mean()),
         "direction_accuracy_min": float(direction.min()),
