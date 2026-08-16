@@ -27,6 +27,8 @@ class CandidateScore:
     normalized_mae: float
     score: float
     validation_samples: int
+    validation_start: str
+    validation_end: str
 
 
 @dataclass(frozen=True)
@@ -36,11 +38,18 @@ class SelectionResult:
 
 
 class PurgedLongHorizonModelSelector:
-    """Select a long-horizon architecture using only pre-test, purged validation data."""
+    """Select architectures on the same calendar window while preserving each candidate's own sampling."""
 
-    def __init__(self, validation_size: int = 120, min_fit_size: int = 500, mae_penalty: float = 0.10):
-        self.validation_size = validation_size
+    def __init__(
+        self,
+        validation_days: int = 120,
+        min_fit_size: int = 500,
+        min_validation_samples: int = 60,
+        mae_penalty: float = 0.10,
+    ):
+        self.validation_days = validation_days
         self.min_fit_size = min_fit_size
+        self.min_validation_samples = min_validation_samples
         self.mae_penalty = mae_penalty
 
     @staticmethod
@@ -54,17 +63,21 @@ class PurgedLongHorizonModelSelector:
         candidate: ModelCandidate,
         security_id: str,
         horizon: str,
-        cutoff: pd.Timestamp,
+        outer_test_start: pd.Timestamp,
         purge_days: int,
     ) -> CandidateScore | None:
-        available = candidate.dataset.loc[candidate.dataset.index < cutoff].dropna()
-        if len(available) < self.min_fit_size + self.validation_size:
+        validation_end = pd.Timestamp(outer_test_start)
+        validation_start = validation_end - pd.Timedelta(days=self.validation_days)
+        data = candidate.dataset.dropna().sort_index()
+        validation = data.loc[(data.index >= validation_start) & (data.index < validation_end)]
+        if len(validation) < self.min_validation_samples:
             return None
-        validation = available.iloc[-self.validation_size:]
-        fit_cutoff = validation.index[0] - pd.Timedelta(days=purge_days)
-        fit = available.loc[available.index < fit_cutoff]
+
+        fit_cutoff = validation_start - pd.Timedelta(days=purge_days)
+        fit = data.loc[data.index < fit_cutoff]
         if len(fit) < self.min_fit_size:
             return None
+
         Xtr, ytr = fit.drop(columns="target"), fit["target"]
         Xv, yv = validation.drop(columns="target"), validation["target"]
         artifact = candidate.trainer.train(security_id, horizon, Xtr, ytr)
@@ -75,7 +88,15 @@ class PurgedLongHorizonModelSelector:
         scale = float(np.std(actual)) + 1e-8
         normalized_mae = mae / scale
         score = direction - self.mae_penalty * normalized_mae
-        return CandidateScore(candidate.name, direction, normalized_mae, score, len(validation))
+        return CandidateScore(
+            name=candidate.name,
+            direction_accuracy=direction,
+            normalized_mae=normalized_mae,
+            score=score,
+            validation_samples=int(len(validation)),
+            validation_start=str(validation.index[0]),
+            validation_end=str(validation.index[-1]),
+        )
 
     def select(
         self,
@@ -91,7 +112,7 @@ class PurgedLongHorizonModelSelector:
             if scored is not None:
                 scores.append(scored)
         if not scores:
-            raise ValueError("No model candidate has enough purged inner-validation history")
+            raise ValueError("No model candidate has enough data in the shared purged calendar validation window")
         scores.sort(key=lambda item: (item.score, item.direction_accuracy, -item.normalized_mae), reverse=True)
         winner_name = scores[0].name
         winner = next(candidate for candidate in candidates if candidate.name == winner_name)
