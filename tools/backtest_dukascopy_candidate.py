@@ -11,12 +11,12 @@ import pandas as pd
 from prediction_system.config import HORIZONS, METALS
 from prediction_system.data import PicklePriceRepository
 from prediction_system.features import FeatureBuilder
+from prediction_system.long_horizon_features import LongHorizonFeatureBuilder
 from prediction_system.trainer import PredictionTrainingService
 
 MAP = {"AUXLN":"gold", "AGXLN":"silver", "PTXLN":"platinum", "PDXLN":"palladium"}
 MIN_CONTEXT_COVERAGE = 0.80
 MIN_FEATURE_COVERAGE = 0.95
-FEATURE_WARMUP_ROWS = max(FeatureBuilder.WINDOWS)
 
 
 def load_candidate(root: Path, security_id: str) -> pd.DataFrame:
@@ -72,9 +72,15 @@ def _filter_context(context: pd.DataFrame, target_index: pd.DatetimeIndex, frequ
     return (pd.concat(kept, axis=1, sort=False) if kept else pd.DataFrame()), coverage
 
 
-def _filter_features(features: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], list[str]]:
+def _warmup_rows(builder) -> int:
+    if isinstance(builder, LongHorizonFeatureBuilder):
+        return max(LongHorizonFeatureBuilder.HOURLY_WINDOWS)
+    return max(FeatureBuilder.WINDOWS)
+
+
+def _filter_features(features: pd.DataFrame, warmup_rows: int) -> tuple[pd.DataFrame, dict[str, float], list[str]]:
     clean = features.replace([np.inf, -np.inf], np.nan)
-    probe = clean.iloc[min(FEATURE_WARMUP_ROWS, max(0, len(clean) - 1)):]
+    probe = clean.iloc[min(warmup_rows, max(0, len(clean) - 1)):]
     coverage = {str(col): float(probe[col].notna().mean()) for col in clean.columns}
     kept = [col for col in clean.columns if coverage[str(col)] >= MIN_FEATURE_COVERAGE]
     dropped = [str(col) for col in clean.columns if col not in kept]
@@ -92,12 +98,13 @@ def _split_counts(n: int) -> tuple[int, int]:
 
 
 def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
-    service = PredictionTrainingService(price_repository=repo, feature_builder=FeatureBuilder())
+    service = PredictionTrainingService(price_repository=repo)
     prices = service._series(repo.hourly(security_id))
     hourly_context, hourly_coverage = _filter_context(service._context_frame("hourly"), prices.index, "hourly")
     daily_context, daily_coverage = _filter_context(service._context_frame("daily"), prices.index, "daily")
-    raw_features = service.feature_builder.build(prices, hourly_context=hourly_context, daily_context=daily_context)
-    features, feature_coverage, dropped_features = _filter_features(raw_features)
+    feature_builder = service.feature_policy.for_horizon(horizon)
+    raw_features = feature_builder.build(prices, hourly_context=hourly_context, daily_context=daily_context)
+    features, feature_coverage, dropped_features = _filter_features(raw_features, _warmup_rows(feature_builder))
     target = service.target_builder.build(prices, HORIZONS[horizon])
     dataset = features.join(target).dropna()
     train_n, test_n = _split_counts(len(dataset))
@@ -112,6 +119,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str) -> dict:
         "minimum_feature_coverage": MIN_FEATURE_COVERAGE,
         "minimum_feature_coverage_observed": float(min(feature_coverage.values())) if feature_coverage else 0.0,
         "target_mode": "time-aware-clock-hours", "trainer": type(trainer).__name__,
+        "feature_builder": type(feature_builder).__name__,
     }
     if train_n == 0 or test_n < 50:
         return {"status": "insufficient_usable_rows", **diagnostics, "required_minimum": 300}
@@ -141,7 +149,7 @@ def main() -> None:
     repo = CandidateRepository(Path(args.candidate_dir))
     selected_metals = [m for m in METALS if args.metal is None or m.security_id == args.metal]
     selected_horizons = [h for h in HORIZONS if args.horizon is None or h == args.horizon]
-    report = {"dataset":"Dukascopy H1 USD/kg candidate", "architecture":"adaptive-horizon-trainer-time-aware-target-no-production-overwrite", "selection":{"metal":args.metal,"horizon":args.horizon}, "results":{}}
+    report = {"dataset":"Dukascopy H1 USD/kg candidate", "architecture":"horizon-feature-and-trainer-policy-time-aware-target-no-production-overwrite", "selection":{"metal":args.metal,"horizon":args.horizon}, "results":{}}
     failures = completed = 0
     for metal in selected_metals:
         report["results"][metal.security_id] = {}
