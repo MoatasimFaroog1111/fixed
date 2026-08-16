@@ -7,6 +7,7 @@ from .data import PicklePriceRepository, PriceRepository
 from .features import FeatureBuilder
 from .model import HorizonTrainer, WalkForwardEnsembleTrainer
 from .targets import HorizonTargetBuilder, TimeAwareHorizonTargetBuilder
+from .trainer_policy import AdaptiveHorizonTrainerPolicy, HorizonTrainerPolicy
 
 
 class PredictionTrainingService:
@@ -21,12 +22,18 @@ class PredictionTrainingService:
         feature_builder: FeatureBuilder | None = None,
         trainer: HorizonTrainer | None = None,
         target_builder: HorizonTargetBuilder | None = None,
+        trainer_policy: HorizonTrainerPolicy | None = None,
     ):
         self.price_repository = price_repository or PicklePriceRepository()
         self.artifact_repository = artifact_repository or PickleForecastArtifactRepository()
         self.feature_builder = feature_builder or FeatureBuilder()
-        self.trainer = trainer or WalkForwardEnsembleTrainer()
         self.target_builder = target_builder or TimeAwareHorizonTargetBuilder()
+        if trainer_policy is not None:
+            self.trainer_policy = trainer_policy
+        elif trainer is not None:
+            self.trainer_policy = AdaptiveHorizonTrainerPolicy(trainer, trainer)
+        else:
+            self.trainer_policy = AdaptiveHorizonTrainerPolicy.default()
 
     @staticmethod
     def _series(frame: pd.DataFrame) -> pd.Series:
@@ -67,7 +74,8 @@ class PredictionTrainingService:
         dataset = features.join(target).dropna()
         X = dataset.drop(columns="target")
         y = dataset["target"]
-        artifact = self.trainer.train(security_id, horizon, X, y)
+        trainer = self.trainer_policy.for_horizon(horizon)
+        artifact = trainer.train(security_id, horizon, X, y)
         path = self.artifact_repository.save(artifact)
         return {
             "security_id": security_id,
@@ -77,6 +85,7 @@ class PredictionTrainingService:
             "feature_count": len(artifact.feature_names),
             "validation_mae": artifact.validation_mae,
             "confidence": artifact.confidence,
+            "trainer": type(trainer).__name__,
         }
 
     def train_metal(
