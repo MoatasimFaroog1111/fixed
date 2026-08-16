@@ -1,0 +1,48 @@
+name: Daily Regime Long Horizon Backtest
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'prediction_system/daily_regime_features.py'
+      - 'prediction_system/daily_regime_model.py'
+      - 'prediction_system/daily_targets.py'
+      - 'tools/backtest_daily_regime.py'
+      - '.github/workflows/daily-regime-backtest.yml'
+
+jobs:
+  daily-regime:
+    strategy:
+      fail-fast: false
+      matrix:
+        metal: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [1w, 1m]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install numpy pandas scikit-learn requests
+      - name: Download verified Dukascopy dataset artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: dukascopy-candidate-data.yml
+          name: dukascopy-candidate-data
+          path: candidate_data
+          search_artifacts: true
+          if_no_artifact_found: fail
+      - name: Run daily regime purged walk-forward
+        run: |
+          PYTHONPATH=. python tools/backtest_daily_regime.py \
+            --candidate-dir candidate_data \
+            --metal ${{ matrix.metal }} \
+            --horizon ${{ matrix.horizon }} \
+            --out daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
+      - name: Upload daily regime result
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}
+          path: daily-regime-${{ matrix.metal }}-${{ matrix.horizon }}.json
