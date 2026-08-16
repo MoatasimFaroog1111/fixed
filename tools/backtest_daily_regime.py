@@ -14,7 +14,7 @@ from prediction_system.trainer import PredictionTrainingService
 from tools.backtest_dukascopy_candidate import CandidateRepository, _filter_context
 
 
-def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: int = 4, test_size: int = 180) -> dict:
+def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: int = 4, test_size: int = 120, min_train_size: int = 500) -> dict:
     service = PredictionTrainingService(price_repository=repo)
     prices = service._series(repo.hourly(security_id))
     daily_context, coverage = _filter_context(service._context_frame("daily"), prices.index, "daily")
@@ -34,7 +34,7 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
         test = dataset.iloc[test_start:test_end]
         cutoff = test.index[0] - np.timedelta64(purge_days, "D")
         train = dataset.loc[dataset.index < cutoff]
-        if len(train) < 500 or len(test) < 60:
+        if len(train) < min_train_size or len(test) < 60:
             continue
         Xtr, ytr = train.drop(columns="target"), train["target"]
         Xte, yte = test.drop(columns="target"), test["target"]
@@ -51,13 +51,14 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
         })
 
     if not results:
-        return {"status":"insufficient_data","metal":security_id,"horizon":horizon,"usable_daily_rows":int(n)}
+        return {"status":"insufficient_data","metal":security_id,"horizon":horizon,"usable_daily_rows":int(n),"min_train_size":int(min_train_size)}
     direction = np.asarray([r["direction_accuracy"] for r in results])
     return {
         "status":"ok", "metal":security_id, "horizon":horizon,
         "architecture":"daily-regime-purged-walk-forward", "purge_days":purge_days,
         "feature_builder":type(builder).__name__, "trainer":type(trainer).__name__,
         "usable_daily_rows":int(n), "fold_count":len(results),
+        "test_size":int(test_size), "min_train_size":int(min_train_size),
         "test_samples_total":int(sum(r["test_samples"] for r in results)),
         "direction_accuracy_mean":float(direction.mean()), "direction_accuracy_min":float(direction.min()),
         "direction_accuracy_std":float(direction.std()),
@@ -68,8 +69,8 @@ def evaluate(repo: CandidateRepository, security_id: str, horizon: str, folds: i
 
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("--candidate-dir",required=True); p.add_argument("--metal",required=True,choices=("AUXLN","AGXLN","PTXLN","PDXLN")); p.add_argument("--horizon",required=True,choices=("1w","1m")); p.add_argument("--folds",type=int,default=4); p.add_argument("--test-size",type=int,default=180); p.add_argument("--out",required=True); a=p.parse_args()
-    report=evaluate(CandidateRepository(Path(a.candidate_dir)),a.metal,a.horizon,a.folds,a.test_size)
+    p=argparse.ArgumentParser(); p.add_argument("--candidate-dir",required=True); p.add_argument("--metal",required=True,choices=("AUXLN","AGXLN","PTXLN","PDXLN")); p.add_argument("--horizon",required=True,choices=("1w","1m")); p.add_argument("--folds",type=int,default=4); p.add_argument("--test-size",type=int,default=120); p.add_argument("--min-train-size",type=int,default=500); p.add_argument("--out",required=True); a=p.parse_args()
+    report=evaluate(CandidateRepository(Path(a.candidate_dir)),a.metal,a.horizon,a.folds,a.test_size,a.min_train_size)
     Path(a.out).write_text(json.dumps(report,indent=2),encoding="utf-8"); print(json.dumps(report),flush=True)
 
 if __name__ == "__main__": main()
