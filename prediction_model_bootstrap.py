@@ -11,7 +11,7 @@ REPO = os.getenv("PREDICTION_MODEL_REPO", "MoatasimFaroog1111/fixed")
 TAG = os.getenv("PREDICTION_MODEL_RELEASE", "prediction-models-v1")
 MODEL_ROOT = Path(os.getenv("PREDICTION_MODEL_DIR", "prediction_models"))
 METALS = ("AUXLN", "AGXLN", "PTXLN", "PDXLN")
-HORIZONS = ("1h", "6h", "12h", "18h", "24h", "48h", "1w", "1m")
+HORIZONS = ("1h", "2h", "4h", "6h", "12h", "18h", "24h", "48h", "1w", "1m")
 
 
 def expected_models() -> list[tuple[str, str, Path]]:
