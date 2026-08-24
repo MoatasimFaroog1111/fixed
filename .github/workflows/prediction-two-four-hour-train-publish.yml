@@ -1,0 +1,100 @@
+name: Prediction Two And Four Hour Train And Publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/multi-horizon-price-forecast
+    paths:
+      - '.github/workflows/prediction-two-four-hour-train-publish.yml'
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: prediction-models-v1
+
+jobs:
+  train-short-horizon:
+    strategy:
+      fail-fast: false
+      matrix:
+        security_id: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [2h, 4h]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install training dependencies
+        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn requests
+      - name: Train short-horizon model
+        run: python train_prediction_models.py --security-id '${{ matrix.security_id }}' --horizon '${{ matrix.horizon }}'
+      - name: Verify short-horizon model
+        env:
+          SECURITY_ID: ${{ matrix.security_id }}
+          HORIZON: ${{ matrix.horizon }}
+        run: |
+          python - <<'PY'
+          import os
+          from prediction_system.artifacts import PickleForecastArtifactRepository
+          security_id = os.environ['SECURITY_ID']
+          horizon = os.environ['HORIZON']
+          artifact = PickleForecastArtifactRepository('prediction_models').load(security_id, horizon)
+          assert artifact.security_id == security_id
+          assert artifact.horizon == horizon
+          assert len(artifact.models) == 3
+          assert artifact.training_samples >= 250
+          assert len(artifact.feature_names) >= 100
+          print(security_id, horizon, 'verified', artifact.training_samples, artifact.validation_mae, artifact.confidence)
+          PY
+      - name: Upload trained model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-${{ matrix.security_id }}-${{ matrix.horizon }}
+          path: prediction_models/${{ matrix.security_id }}/${{ matrix.horizon }}.pkl
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-short-horizons:
+    needs: train-short-horizon
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download trained artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: short-*
+          path: downloaded
+      - name: Normalize release names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for metal in AUXLN AGXLN PTXLN PDXLN; do
+            for horizon in 2h 4h; do
+              src="$(find "downloaded/short-${metal}-${horizon}" -type f -name "${horizon}.pkl" -print -quit)"
+              test -n "$src"
+              cp "$src" "release-assets/${metal}-${horizon}.pkl"
+            done
+          done
+          test "$(find release-assets -type f -name '*.pkl' | wc -l)" -eq 8
+          ls -lh release-assets
+      - name: Upload 2h and 4h models to existing production release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" release-assets/*.pkl --repo "$GITHUB_REPOSITORY" --clobber
+          names="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[].name')"
+          for metal in AUXLN AGXLN PTXLN PDXLN; do
+            for horizon in 2h 4h; do
+              grep -qx "${metal}-${horizon}.pkl" <<< "$names"
+            done
+          done
+          echo 'All eight 2h/4h release assets verified.'

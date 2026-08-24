@@ -1,0 +1,122 @@
+name: Prediction Full Train
+
+on:
+  push:
+    branches:
+      - 'agent/multi-horizon-price-forecast'
+    paths:
+      - 'prediction_system/**'
+      - 'train_prediction_models.py'
+      - '.github/workflows/prediction-full-train.yml'
+  workflow_dispatch:
+
+jobs:
+  train:
+    name: train-${{ matrix.security_id }}-${{ matrix.horizon }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        security_id: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [6h, 12h, 18h, 24h, 48h, 1w, 1m]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install training dependencies
+        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn requests
+      - name: Train production horizon
+        run: python train_prediction_models.py --security-id '${{ matrix.security_id }}' --horizon '${{ matrix.horizon }}'
+      - name: Upload horizon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ matrix.security_id }}-${{ matrix.horizon }}
+          path: prediction_models/${{ matrix.security_id }}/${{ matrix.horizon }}.pkl
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-and-package:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install serving dependencies
+        run: python -m pip install --upgrade pip && pip install numpy pandas scikit-learn requests
+      - name: Download all trained horizons
+        uses: actions/download-artifact@v4
+        with:
+          pattern: model-*
+          path: downloaded-models
+      - name: Assemble production model directory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          from prediction_system.config import METALS, HORIZONS
+
+          source = Path('downloaded-models')
+          target = Path('prediction_models')
+          for metal in METALS:
+              for horizon in HORIZONS:
+                  src_dir = source / f'model-{metal.security_id}-{horizon}'
+                  candidates = list(src_dir.rglob('*.pkl'))
+                  assert len(candidates) == 1, (src_dir, candidates)
+                  dst = target / metal.security_id / f'{horizon}.pkl'
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(candidates[0], dst)
+          PY
+      - name: Verify all persisted models
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from prediction_system.artifacts import PickleForecastArtifactRepository
+          from prediction_system.config import METALS, HORIZONS
+
+          repo = PickleForecastArtifactRepository('prediction_models')
+          expected = len(METALS) * len(HORIZONS)
+          loaded = 0
+          for metal in METALS:
+              for horizon in HORIZONS:
+                  artifact = repo.load(metal.security_id, horizon)
+                  assert artifact.security_id == metal.security_id
+                  assert artifact.horizon == horizon
+                  assert len(artifact.models) == 3
+                  assert len(artifact.feature_names) >= 100
+                  assert artifact.training_samples >= 250
+                  loaded += 1
+          files = list(Path('prediction_models').rglob('*.pkl'))
+          assert loaded == expected, (loaded, expected)
+          assert len(files) == expected, (len(files), expected)
+          print('verified persisted models=', loaded)
+          PY
+      - name: Smoke-test production serving
+        run: |
+          python - <<'PY'
+          import time
+          from prediction_system import PredictionService
+
+          started = time.perf_counter()
+          result = PredictionService().predict_all()
+          elapsed = time.perf_counter() - started
+          assert result['architecture'] == 'train-once-persist-load-predict'
+          assert len(result['metals']) == 4
+          assert all(len(m['forecasts']) == 7 for m in result['metals'])
+          assert all(f.get('status') != 'model_not_trained' for m in result['metals'] for f in m['forecasts'])
+          assert elapsed < 20.0, elapsed
+          print('production serving seconds=', round(elapsed, 3), 'forecasts=28')
+          PY
+      - name: Package production model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-models-production
+          path: prediction_models/
+          if-no-files-found: error
+          retention-days: 30

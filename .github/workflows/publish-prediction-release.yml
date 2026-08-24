@@ -1,0 +1,87 @@
+name: Publish Prediction Model Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/multi-horizon-price-forecast
+    paths:
+      - .github/workflows/publish-prediction-release.yml
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: prediction-model-release-v1
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN_ID: "31869455728"
+  RELEASE_TAG: "prediction-models-v1"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout serving branch
+        uses: actions/checkout@v4
+
+      - name: Download the 28 verified training artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'model-*' --dir downloaded
+
+      - name: Normalize release asset names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          count=0
+          for artifact_dir in downloaded/model-*; do
+            artifact_name="$(basename "$artifact_dir")"
+            key="${artifact_name#model-}"
+            model_file="$(find "$artifact_dir" -type f -name '*.pkl' -print -quit)"
+            if [ -z "$model_file" ]; then
+              echo "No .pkl found in $artifact_dir" >&2
+              exit 1
+            fi
+            cp "$model_file" "release-assets/${key}.pkl"
+            count=$((count + 1))
+          done
+          echo "Prepared $count model assets"
+          test "$count" -eq 28
+          ls -lh release-assets
+
+      - name: Create or update model release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Prediction Models v1" \
+              --notes "Production persisted models: 4 precious metals x 7 forecast horizons. Generated and verified by GitHub Actions run $SOURCE_RUN_ID."
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Prediction Models v1" \
+              --notes "Production persisted models: 4 precious metals x 7 forecast horizons. Generated and verified by GitHub Actions run $SOURCE_RUN_ID."
+          fi
+
+      - name: Upload 28 persisted model assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" release-assets/*.pkl --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Verify release asset count
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          count="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets | length')"
+          echo "Release assets: $count"
+          test "$count" -eq 28

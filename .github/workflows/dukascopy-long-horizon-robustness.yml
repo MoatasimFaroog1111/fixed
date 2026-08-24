@@ -1,0 +1,51 @@
+name: Dukascopy Long Horizon Robustness
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'tools/backtest_long_horizon_robustness.py'
+      - '.github/workflows/dukascopy-long-horizon-robustness.yml'
+  workflow_dispatch:
+
+jobs:
+  robustness:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        metal: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [1w, 1m]
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.metal }}-${{ matrix.horizon }}-purged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install numpy pandas scikit-learn requests
+      - name: Download verified Dukascopy dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 31881420255
+      - name: Run purged walk-forward robustness test
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python tools/backtest_long_horizon_robustness.py
+          --candidate-dir dukascopy_h1_candidate
+          --metal ${{ matrix.metal }}
+          --horizon ${{ matrix.horizon }}
+          --folds 4
+          --test-size 500
+          --out robustness_${{ matrix.metal }}_${{ matrix.horizon }}.json
+      - name: Upload robustness result
+        uses: actions/upload-artifact@v4
+        with:
+          name: robustness-${{ matrix.metal }}-${{ matrix.horizon }}
+          path: robustness_${{ matrix.metal }}_${{ matrix.horizon }}.json
+          if-no-files-found: error

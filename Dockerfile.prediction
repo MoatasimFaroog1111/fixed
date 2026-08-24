@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-prediction.txt ./
+RUN pip install --upgrade pip && pip install -r requirements-prediction.txt
+
+COPY prediction_dashboard.py prediction_model_bootstrap.py prediction_start.py ./
+COPY prediction_system ./prediction_system
+COPY data ./data
+
+CMD ["python", "prediction_start.py"]
