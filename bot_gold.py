@@ -8,7 +8,7 @@ class GoldBot(BaseMetalBot):
     CURRENCY      = "USD"
     POLL_INTERVAL = 15
     USE_ML        = True
-    DRY_RUN       = False
+    DRY_RUN       = True
     LOG_FILE      = "bot_gold.log"
 
     MAX_POSITION_KG             = 0.01

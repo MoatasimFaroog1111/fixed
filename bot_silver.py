@@ -1,6 +1,6 @@
 """
 Silver Trading Bot — Guardian v7
-DRY_RUN = False  ✅  (PRODUCTION MODE)
+DRY_RUN = True   🔒  (PAPER MODE — no real orders)
 """
 from base_bot import BaseMetalBot
 from shared_utils import launch_bot
@@ -12,7 +12,7 @@ class SilverBot(BaseMetalBot):
     CURRENCY      = "USD"
     POLL_INTERVAL = 15
     USE_ML        = True
-    DRY_RUN       = False          # ✅ PRODUCTION — أوامر حقيقية
+    DRY_RUN       = True           # 🔒 PAPER — لا أوامر حقيقية
     LOG_FILE      = "bot_silver.log"
     USE_NEWS      = True
 
