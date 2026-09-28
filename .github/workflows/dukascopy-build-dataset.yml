@@ -1,0 +1,30 @@
+name: Dukascopy 5Y H1 Dataset Build
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'tools/build_dukascopy_h1_dataset.mjs'
+      - '.github/workflows/dukascopy-build-dataset.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Dukascopy downloader
+        run: npm install --no-save dukascopy-node
+      - name: Build five-year H1 candidate datasets
+        run: node tools/build_dukascopy_h1_dataset.mjs
+      - name: Show quality report
+        run: cat dukascopy_h1_candidate/quality_report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate/
+          compression-level: 6

@@ -1,0 +1,83 @@
+name: Dukascopy Candidate Backtest
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'tools/backtest_dukascopy_candidate.py'
+      - 'tools/aggregate_dukascopy_backtests.py'
+      - '.github/workflows/dukascopy-candidate-backtest.yml'
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    name: ${{ matrix.metal }}-${{ matrix.horizon }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        metal: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [6h, 12h, 18h, 24h, 48h, 1w, 1m]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install numpy pandas scikit-learn requests
+      - name: Download verified Dukascopy dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate
+          github-token: ${{ github.token }}
+          run-id: 31881420255
+      - name: Run isolated candidate backtest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python tools/backtest_dukascopy_candidate.py
+          --candidate-dir dukascopy_h1_candidate
+          --metal ${{ matrix.metal }}
+          --horizon ${{ matrix.horizon }}
+          --out candidate_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-backtest-${{ matrix.metal }}-${{ matrix.horizon }}
+          path: candidate_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
+          if-no-files-found: error
+
+  aggregate:
+    name: aggregate-28-results
+    needs: backtest
+    if: ${{ always() && needs.backtest.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download this run's 28 result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dukascopy-backtest-*
+          path: backtest_results
+          merge-multiple: false
+      - name: Aggregate metrics
+        run: >-
+          python tools/aggregate_dukascopy_backtests.py
+          --input-dir backtest_results
+          --json-out dukascopy_backtest_summary.json
+          --csv-out dukascopy_backtest_summary.csv
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-backtest-summary
+          path: |
+            dukascopy_backtest_summary.json
+            dukascopy_backtest_summary.csv
+          if-no-files-found: error

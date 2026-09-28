@@ -1,0 +1,55 @@
+name: Dukascopy Long Horizon Backtest
+
+on:
+  push:
+    branches: [agent/multi-horizon-price-forecast]
+    paths:
+      - 'prediction_system/feature_policy.py'
+      - 'prediction_system/long_horizon_features.py'
+      - 'prediction_system/trainer.py'
+      - 'prediction_system/trainer_policy.py'
+      - 'prediction_system/model.py'
+      - 'tools/backtest_dukascopy_candidate.py'
+      - '.github/workflows/dukascopy-long-horizon-backtest.yml'
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    name: ${{ matrix.metal }}-${{ matrix.horizon }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        metal: [AUXLN, AGXLN, PTXLN, PDXLN]
+        horizon: [1w, 1m]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install numpy pandas scikit-learn requests
+      - name: Download verified Dukascopy dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dukascopy-h1-candidate
+          path: dukascopy_h1_candidate
+          github-token: ${{ github.token }}
+          run-id: 31881420255
+      - name: Run long-horizon candidate backtest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python tools/backtest_dukascopy_candidate.py
+          --candidate-dir dukascopy_h1_candidate
+          --metal ${{ matrix.metal }}
+          --horizon ${{ matrix.horizon }}
+          --out long_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-backtest-${{ matrix.metal }}-${{ matrix.horizon }}
+          path: long_backtest_${{ matrix.metal }}_${{ matrix.horizon }}.json
+          if-no-files-found: error
