@@ -2,9 +2,9 @@
 Secure launcher for Guardian Telegram Command Center v4.
 
 It keeps telegram_control_v4.py unchanged, but patches runtime paths and
-credentials before starting the original main loop. This prevents hardcoded
-/home/moatasim/fixed paths from breaking Railway deployments and keeps
-Telegram authorization in runtime-only configuration.
+credentials before starting the original main loop. Mutable files are stored
+under GUARDIAN_RUNTIME_DIR so Docker/Fly/Hetzner replacements do not lose
+Telegram offsets, control state, or bot state.
 """
 from __future__ import annotations
 
@@ -14,16 +14,18 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv  # type: ignore
-except Exception:  # pragma: no cover - optional dependency during bootstrapping
+except Exception:  # pragma: no cover
     load_dotenv = None
 
+BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = Path(os.environ.get("GUARDIAN_RUNTIME_DIR", str(BASE_DIR))).resolve()
+RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
 if load_dotenv:
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(BASE_DIR / ".env")
 
 from api_client import BullionVaultAPI
 import telegram_control_v4 as cockpit
-
-BASE_DIR = Path(__file__).resolve().parent
 
 
 def _parse_ids(*env_names: str) -> list[int]:
@@ -60,23 +62,23 @@ def _ensure_authorized_users() -> None:
 
 
 def _patch_paths() -> None:
-    cockpit.OFFSET_FILE = BASE_DIR / "telegram_offset.txt"
-    cockpit.CONTROL_FILE = BASE_DIR / "control_state.json"
-    cockpit.TRADE_LOG = BASE_DIR / "trade_log.json"
-    cockpit.AUTH_FILE = BASE_DIR / "authorized_users.json"
-    cockpit.PENDING_ORDER = BASE_DIR / "pending_order.json"
+    cockpit.OFFSET_FILE = RUNTIME_DIR / "telegram_offset.txt"
+    cockpit.CONTROL_FILE = RUNTIME_DIR / "control_state.json"
+    cockpit.TRADE_LOG = RUNTIME_DIR / "trade_log.json"
+    cockpit.AUTH_FILE = RUNTIME_DIR / "authorized_users.json"
+    cockpit.PENDING_ORDER = RUNTIME_DIR / "pending_order.json"
 
     cockpit.STATE_FILES = {
-        "gold": BASE_DIR / "state_AUXLN.json",
-        "silver": BASE_DIR / "state_AGXLN.json",
-        "platinum": BASE_DIR / "state_PTXLN.json",
-        "palladium": BASE_DIR / "state_PDXLN.json",
+        "gold": RUNTIME_DIR / "state_AUXLN.json",
+        "silver": RUNTIME_DIR / "state_AGXLN.json",
+        "platinum": RUNTIME_DIR / "state_PTXLN.json",
+        "palladium": RUNTIME_DIR / "state_PDXLN.json",
     }
     cockpit.PRICE_LOG_FILES = {
-        "gold": BASE_DIR / "price_log_AUXLN.json",
-        "silver": BASE_DIR / "price_log_AGXLN.json",
-        "platinum": BASE_DIR / "price_log_PTXLN.json",
-        "palladium": BASE_DIR / "price_log_PDXLN.json",
+        "gold": RUNTIME_DIR / "price_log_AUXLN.json",
+        "silver": RUNTIME_DIR / "price_log_AGXLN.json",
+        "platinum": RUNTIME_DIR / "price_log_PTXLN.json",
+        "palladium": RUNTIME_DIR / "price_log_PDXLN.json",
     }
 
 
