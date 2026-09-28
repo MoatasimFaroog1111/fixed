@@ -9,7 +9,7 @@ primary_region = "sin"
   ENABLED_BOTS = "SILVER"
   ENABLE_TELEGRAM_COMMANDS = "0"
 
-[mounts]
+[[mounts]]
   source = "guardian_data"
   destination = "/data"
 
