@@ -1,14 +1,11 @@
 """
 Run Guardian metal bots as separate processes.
 
-Risk note:
-- By default, only SILVER is started for real trading because it is the most
-  practical metal for small balances and usually has better tradability.
-- Use ENABLED_BOTS in Railway Variables to choose the active metals.
-  Examples:
-    ENABLED_BOTS=SILVER
-    ENABLED_BOTS=SILVER,PLATINUM
-    ENABLED_BOTS=ALL
+Migration safety:
+- The trading classes remain DRY_RUN=True.
+- ENABLE_TELEGRAM_COMMANDS can disable the Telegram command poller while a
+  shadow/standby instance is running, preventing duplicate Telegram polling.
+- GUARDIAN_RUNTIME_DIR moves mutable state off the application image.
 """
 import subprocess
 import sys
@@ -17,21 +14,30 @@ import os
 import signal
 from pathlib import Path
 
-BASE_DIR   = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = Path(os.environ.get("GUARDIAN_RUNTIME_DIR", str(BASE_DIR))).resolve()
+RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 PYTHON_BIN = sys.executable
 
 BOTS = {
-    "GOLD":     "bot_gold.py",
+    "GOLD": "bot_gold.py",
     "PLATINUM": "bot_platinum.py",
-    "SILVER":    "bot_silver.py",
+    "SILVER": "bot_silver.py",
     "PALLADIUM": "bot_palladium.py",
 }
 
-SERVICES = {
+TELEGRAM_SERVICE = {
     "TELEGRAM_CMD": "telegram_control_v4_secure.py",
 }
 
 DEFAULT_ENABLED_BOTS = "SILVER"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_env(path: Path):
@@ -52,8 +58,6 @@ def check_credentials():
     password = os.environ.get("BV_PASSWORD")
     if not username or not password:
         print("ERROR: BV_USERNAME and BV_PASSWORD must be set.")
-        print("  Option 1: export BV_USERNAME=... BV_PASSWORD=...")
-        print("  Option 2: create a .env file (see .env.example)")
         sys.exit(1)
     print("[ENV] BullionVault credentials loaded.")
 
@@ -80,16 +84,28 @@ def _parse_enabled_bots() -> dict:
     return selected
 
 
+def _service_map(active_bots: dict) -> dict:
+    services = dict(active_bots)
+    if _env_bool("ENABLE_TELEGRAM_COMMANDS", True):
+        services.update(TELEGRAM_SERVICE)
+        print("[CONFIG] Telegram command service enabled.")
+    else:
+        print("[CONFIG] Telegram command service disabled (shadow/standby-safe).")
+    return services
+
+
 def start_bot(name: str, filename: str):
     path = BASE_DIR / filename
     if not path.exists():
         print(f"[{name}] {filename} not found — skipping.")
         return None
-    print(f"[{name}] Starting {filename} ...")
+    print(f"[{name}] Starting {filename} ... runtime={RUNTIME_DIR}")
+    env = os.environ.copy()
+    env["GUARDIAN_RUNTIME_DIR"] = str(RUNTIME_DIR)
     return subprocess.Popen(
         [PYTHON_BIN, str(path)],
-        cwd=BASE_DIR,
-        env=os.environ.copy(),
+        cwd=RUNTIME_DIR,
+        env=env,
     )
 
 
@@ -99,7 +115,7 @@ def main():
 
     processes = {}
     active_bots = _parse_enabled_bots()
-    all_procs = {**active_bots, **SERVICES}
+    all_procs = _service_map(active_bots)
     restart_counts = {name: 0 for name in all_procs}
     max_restarts = int(os.environ.get("MAX_PROCESS_RESTARTS", "12"))
 
@@ -122,13 +138,13 @@ def main():
             proc.terminate()
         for metal, proc in processes.items():
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
         print("All stopped.")
         sys.exit(0)
 
-    signal.signal(signal.SIGINT,  shutdown)
+    signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     restart_after = {}
@@ -150,7 +166,7 @@ def main():
                     restart_after[name] = now + wait
                 elif now >= restart_after[name]:
                     del restart_after[name]
-                    all_procs_map = {**active_bots, **SERVICES}
+                    all_procs_map = _service_map(active_bots)
                     if name not in all_procs_map:
                         processes.pop(name, None)
                         continue

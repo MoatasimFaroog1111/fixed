@@ -1,0 +1,19 @@
+app = "guardian-bullion-bot"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  GUARDIAN_RUNTIME_DIR = "/data"
+  ENABLED_BOTS = "SILVER"
+  ENABLE_TELEGRAM_COMMANDS = "0"
+
+[[mounts]]
+  source = "guardian_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

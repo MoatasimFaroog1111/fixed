@@ -3,12 +3,25 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 import os
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///guardian.db"
-)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+def _database_url() -> str:
+    url = os.getenv("DATABASE_URL", "sqlite:///guardian.db").strip()
+    # SQLAlchemy defaults postgresql:// to psycopg2. The deployment uses
+    # psycopg v3, so normalize provider URLs (including Neon) explicitly.
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+DATABASE_URL = _database_url()
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
 
 SessionLocal = sessionmaker(
     autocommit=False,

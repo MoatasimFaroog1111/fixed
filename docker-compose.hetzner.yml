@@ -1,0 +1,21 @@
+services:
+  guardian-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: guardian-bullion-bot:local
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      GUARDIAN_RUNTIME_DIR: /data
+    volumes:
+      - guardian_runtime:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+
+volumes:
+  guardian_runtime:
